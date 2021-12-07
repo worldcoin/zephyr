@@ -593,7 +593,12 @@ static int start_read(const struct device *dev,
 	!defined(CONFIG_SOC_SERIES_STM32F1X) && \
 	!defined(STM32F3X_ADC_V2_5) && \
 	!defined(CONFIG_SOC_SERIES_STM32L1X)
+        LL_ADC_Disable(adc);
+		/* we cannot calibrate the ADC while the ADC is enabled */
+		while (LL_ADC_IsEnabled(adc) == 1UL) {
+		}
 		adc_stm32_calib(dev);
+		LL_ADC_Enable(adc);
 #else
 		LOG_ERR("Calibration not supported");
 		return -ENOTSUP;
