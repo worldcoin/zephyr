@@ -17,11 +17,15 @@
 #include <zephyr/device.h>
 #include <zephyr/kernel.h>
 #include <zephyr/init.h>
+#include <drivers/adc/adc_stm32.h>
 #include <soc.h>
 #include <stm32_ll_adc.h>
 #if defined(CONFIG_SOC_SERIES_STM32U5X)
 #include <stm32_ll_pwr.h>
 #endif /* CONFIG_SOC_SERIES_STM32U5X */
+#include <stm32_ll_dma.h>
+
+#include <drivers/dma.h>
 
 #define ADC_CONTEXT_USES_KERNEL_TIMER
 #include "adc_context.h"
@@ -87,6 +91,18 @@ static const uint32_t table_seq_len[] = {
 	SEQ_LEN(16),
 };
 #endif
+
+static inline uint32_t get_dma_adc_request_id(ADC_TypeDef *adc)
+{
+	switch ((uintptr_t)adc) {
+		case (uintptr_t)ADC1: return LL_DMAMUX_REQ_ADC1;
+		case (uintptr_t)ADC2: return LL_DMAMUX_REQ_ADC2;
+		case (uintptr_t)ADC3: return LL_DMAMUX_REQ_ADC3;
+		case (uintptr_t)ADC4: return LL_DMAMUX_REQ_ADC4;
+		case (uintptr_t)ADC5: return LL_DMAMUX_REQ_ADC5;
+		default: return 0;
+	}
+}
 
 #define RES(n)		LL_ADC_RESOLUTION_##n##B
 static const uint32_t table_resolution[] = {
@@ -243,6 +259,7 @@ struct adc_stm32_data {
 	struct adc_context ctx;
 	const struct device *dev;
 	uint16_t *buffer;
+	uint32_t buffer_size;
 	uint16_t *repeat_buffer;
 
 	uint8_t resolution;
@@ -252,6 +269,18 @@ struct adc_stm32_data {
 	defined(CONFIG_SOC_SERIES_STM32L0X)
 	int8_t acq_time_index;
 #endif
+	struct dma_config dma_config;
+	struct dma_block_config dma_block_config;
+
+	struct adc_sequence sequence_copy;
+	struct adc_sequence_options sequence_options_copy;
+	bool continuous_mode;
+	adc_stm32_read_continuous_half_complete_callback continous_mode_half_complete_callback;
+
+	// The length of `table_rank` should tell us the maximum number of
+	// channels one could request to sample at once. We meed twice that number
+	// to take two samples instead of one, and throw away the first.
+	uint16_t single_sampling_buffer[ARRAY_SIZE(table_rank) * 2];
 };
 
 struct adc_stm32_cfg {
@@ -261,14 +290,15 @@ struct adc_stm32_cfg {
 	const struct pinctrl_dev_config *pcfg;
 	bool has_temp_channel;
 	bool has_vref_channel;
+	const struct device *dma_dev;
+	const uint32_t dma_channel;
 };
 
 #ifdef CONFIG_ADC_STM32_SHARED_IRQS
 static bool init_irq = true;
 #endif
 
-static int check_buffer_size(const struct adc_sequence *sequence,
-			     uint8_t active_channels)
+static inline size_t get_needed_buffer_size(const struct adc_sequence *sequence, uint8_t active_channels)
 {
 	size_t needed_buffer_size;
 
@@ -277,6 +307,14 @@ static int check_buffer_size(const struct adc_sequence *sequence,
 	if (sequence->options) {
 		needed_buffer_size *= (1 + sequence->options->extra_samplings);
 	}
+
+	return needed_buffer_size;
+}
+
+static int check_buffer_size(const struct adc_sequence *sequence,
+			     uint8_t active_channels)
+{
+	size_t needed_buffer_size = get_needed_buffer_size(sequence, active_channels);
 
 	if (sequence->buffer_size < needed_buffer_size) {
 		LOG_ERR("Provided buffer is too small (%u/%u)",
@@ -450,6 +488,110 @@ static int adc_stm32_enable(ADC_TypeDef *adc)
 	return 0;
 }
 
+static inline uint32_t z_arm_dwt_get_cycles(void)
+{
+    return DWT->CYCCNT;
+}
+
+static void dma_complete(const struct device *dev, void *user_data, uint32_t channel, int status)
+{
+	const struct device *adc_dev = user_data;
+	struct adc_stm32_data *data = adc_dev->data;
+	const struct adc_stm32_cfg *config = adc_dev->config;
+	ADC_TypeDef *adc = config->base;
+
+	LOG_DBG("dma_complete");
+
+	if (LL_ADC_IsActiveFlag_OVR(adc)) {
+		LL_ADC_REG_StopConversion(adc);
+		dma_stop(config->dma_dev, config->dma_channel);
+		LL_ADC_ClearFlag_OVR(adc);
+		LOG_ERR("DMA sampling complete, but ADC overrun has occured");
+		adc_context_complete(&data->ctx, -EINVAL);
+		/* data->continous_mode_half_complete_callback != NULL
+		 * implies data->continuous_mode
+		 */
+		if (data->continous_mode_half_complete_callback) {
+			data->continous_mode_half_complete_callback(-EINVAL);
+		}
+	} else if (status) {
+		LOG_ERR("DMA error %d", status);
+
+		LL_ADC_REG_StopConversion(adc);
+		dma_stop(config->dma_dev, config->dma_channel);
+
+		adc_context_complete(&data->ctx, status);
+
+		/* data->continous_mode_half_complete_callback != NULL
+		 * implies data->continuous_mode
+		 */
+		if (data->continous_mode_half_complete_callback) {
+			data->continous_mode_half_complete_callback(status);
+		}
+	} else if (data->continuous_mode) {
+		/* data->continous_mode_half_complete_callback != NULL
+		 * implies data->continuous_mode.
+		 * However data->continuous_mode does not imply
+		 * data->continous_mode_half_complete_callback. We allow the case
+		 * that someone wants continuous sampling into a buffer but doesn't
+		 * want to act on complete on half complete.
+		 */
+		if (data->continous_mode_half_complete_callback) {
+			data->continous_mode_half_complete_callback(0);
+		}
+	} else {
+		adc_context_on_sampling_done(&data->ctx, adc_dev);
+	}
+}
+
+static int setup_dma(const struct device *dev, uint32_t block_size)
+{
+	int ret;
+	const struct adc_stm32_cfg *config = dev->config;
+	struct adc_stm32_data *data = dev->data;
+	ADC_TypeDef *adc = (ADC_TypeDef *)config->base;
+
+	data->dma_block_config = (struct dma_block_config){
+		.source_address = (uint32_t)&adc->DR,
+		.dest_address = (uint32_t)data->buffer,
+		.block_size = block_size,
+		.dest_addr_adj = DMA_ADDR_ADJ_INCREMENT,
+		.source_addr_adj = DMA_ADDR_ADJ_NO_CHANGE,
+	};
+
+	if (data->continuous_mode) {
+		data->dma_block_config.source_reload_en = true;
+		data->dma_block_config.dest_reload_en = true;
+	}
+
+	data->dma_config = (struct dma_config){
+		.dma_slot = get_dma_adc_request_id(adc),
+		.channel_direction = PERIPHERAL_TO_MEMORY,
+		.channel_priority = 3,
+		.source_data_size = sizeof(uint16_t),
+		.dest_data_size = sizeof(uint16_t),
+		.dma_callback = dma_complete,
+		.head_block = &data->dma_block_config,
+		.user_data = (void *)dev
+	};
+
+	ret = dma_config(config->dma_dev, config->dma_channel, &data->dma_config);
+
+	if (ret) {
+		LOG_ERR("Error configuring DMA channel");
+		return ret;
+	}
+
+	ret = dma_start(config->dma_dev, config->dma_channel);
+
+	if (ret) {
+		LOG_ERR("Failed to start DMA");
+		return ret;
+	}
+
+	return 0;
+}
+
 static int start_read(const struct device *dev,
 		      const struct adc_sequence *sequence)
 {
@@ -505,44 +647,46 @@ static int start_read(const struct device *dev,
 		return -EINVAL;
 	}
 
-	uint32_t channels = sequence->channels;
-	uint8_t index = find_lsb_set(channels) - 1;
+	data->channel_count = 0;
 
-	if (channels > BIT(index)) {
-		LOG_ERR("Only single channel supported");
-		return -ENOTSUP;
-	}
+	for (uint32_t i = 0; i < STM32_CHANNEL_COUNT; ++i) {
+		/* only process selected channels */
+		if (!(sequence->channels & BIT(i))) {
+			continue;
+		}
 
-	data->buffer = sequence->buffer;
-
-	uint32_t channel = __LL_ADC_DECIMAL_NB_TO_CHANNEL(index);
-#if defined(CONFIG_SOC_SERIES_STM32H7X)
-	/*
-	 * Each channel in the sequence must be previously enabled in PCSEL.
-	 * This register controls the analog switch integrated in the IO level.
-	 */
-	LL_ADC_SetChannelPreSelection(adc, channel);
+		uint32_t channel = __LL_ADC_DECIMAL_NB_TO_CHANNEL(i);
+#if	defined(CONFIG_SOC_SERIES_STM32H7X)
+		/*
+		 * Each channel in the sequence must be previously enabled in PCSEL.
+		 * This register controls the analog switch integrated in the IO level.
+		 */
+		LL_ADC_SetChannelPreSelection(adc, channel);
 #endif
 
-#if defined(CONFIG_SOC_SERIES_STM32F0X) || \
-	defined(CONFIG_SOC_SERIES_STM32L0X)
-	LL_ADC_REG_SetSequencerChannels(adc, channel);
-#elif defined(CONFIG_SOC_SERIES_STM32G0X) || \
-	defined(CONFIG_SOC_SERIES_STM32WLX)
-	/* STM32G0 in "not fully configurable" sequencer mode */
-	LL_ADC_REG_SetSequencerChannels(adc, channel);
-	while (LL_ADC_IsActiveFlag_CCRDY(adc) == 0) {
-	}
+#if	defined(CONFIG_SOC_SERIES_STM32F0X) || \
+		defined(CONFIG_SOC_SERIES_STM32L0X)
+		LL_ADC_REG_SetSequencerChannels(adc, channel);
+#elif	defined(CONFIG_SOC_SERIES_STM32G0X) || \
+		defined(CONFIG_SOC_SERIES_STM32WLX)
+		/* STM32G0 in "not fully configurable" sequencer mode */
+		LL_ADC_REG_SetSequencerChannels(adc, channel);
+		while (LL_ADC_IsActiveFlag_CCRDY(adc) == 0) {
+		}
 #else
-	LL_ADC_REG_SetSequencerRanks(adc, table_rank[0], channel);
-	LL_ADC_REG_SetSequencerLength(adc, table_seq_len[0]);
+		LL_ADC_REG_SetSequencerRanks(adc, table_rank[data->channel_count], channel);
+		LL_ADC_REG_SetSequencerLength(adc, table_seq_len[data->channel_count]);
 #endif
-	data->channel_count = 1;
+		data->channel_count++;
+	}
 
 	err = check_buffer_size(sequence, data->channel_count);
 	if (err) {
 		return err;
 	}
+
+	data->buffer = sequence->buffer;
+	data->buffer_size = sequence->buffer_size;
 
 #if defined(CONFIG_SOC_SERIES_STM32G0X) || \
 	defined(CONFIG_SOC_SERIES_STM32WLX)
@@ -655,30 +799,76 @@ static int start_read(const struct device *dev,
 #endif
 	}
 
-#if defined(CONFIG_SOC_SERIES_STM32F0X) || \
-	defined(STM32F3X_ADC_V1_1) || \
-	defined(CONFIG_SOC_SERIES_STM32L0X) || \
-	defined(CONFIG_SOC_SERIES_STM32L4X) || \
-	defined(CONFIG_SOC_SERIES_STM32L5X) || \
-	defined(CONFIG_SOC_SERIES_STM32WBX) || \
-	defined(CONFIG_SOC_SERIES_STM32G0X) || \
-	defined(CONFIG_SOC_SERIES_STM32G4X) || \
-	defined(CONFIG_SOC_SERIES_STM32H7X) || \
-	defined(CONFIG_SOC_SERIES_STM32U5X) || \
-	defined(CONFIG_SOC_SERIES_STM32WLX)
-	LL_ADC_EnableIT_EOC(adc);
-#elif defined(CONFIG_SOC_SERIES_STM32F1X)
-	LL_ADC_EnableIT_EOS(adc);
-#elif defined(STM32F3X_ADC_V2_5)
-	adc_stm32_enable(adc);
-	LL_ADC_EnableIT_EOS(adc);
-#else
-	LL_ADC_EnableIT_EOCS(adc);
-#endif
+	LL_ADC_ClearFlag_OVR(adc);
 
-	adc_context_start_read(&data->ctx, sequence);
+	/*  DMA needs to know the total number of bytes to transfer if in non-continuous mode.
+	 *  DMA needs to know the length of the buffer to use if in continuous mode.
+	 *  The difference is that the caller can passed in an oversized buffer for non-continous mode
+	 *  but we don't fill it up completely, only (channel_count * 2) * (1 + extra_samplings).
+	 *  In continuous mode, the extra_samplings argument is meaningless, and we just want to
+	 *  tell DMA to use the entire buffer size, rounded down to the nearest multiple of
+	 *  (channel_count * 2).
+	 */
+	if (data->continuous_mode) {
+		if (sequence->options && sequence->options->extra_samplings) {
+			LOG_ERR("Sequence options extra_samplings is not supported in continuous mode, since we are doing unlimited samples. please leave at zero.");
+			return -ENOTSUP;
+		}
 
-	return adc_context_wait_for_completion(&data->ctx);
+		LL_ADC_REG_SetContinuousMode(adc, LL_ADC_REG_CONV_CONTINUOUS);
+		LL_ADC_REG_SetDMATransfer(adc, LL_ADC_REG_DMA_TRANSFER_UNLIMITED);
+
+		size_t bytes_in_sequence = data->channel_count * sizeof(uint16_t);
+		size_t nearest_multiple = (sequence->buffer_size / bytes_in_sequence) * bytes_in_sequence;
+
+		err = setup_dma(dev, nearest_multiple);
+	} else {
+		LL_ADC_REG_SetContinuousMode(adc, LL_ADC_REG_CONV_CONTINUOUS);
+		LL_ADC_REG_SetDMATransfer(adc, LL_ADC_REG_DMA_TRANSFER_LIMITED);
+
+		// To make Zephyr drivers work that only take one sample, we have to add an ugly hack here.
+		// Because of silicon errata, the first sample in a sequence may be garbage, we we need to
+		// take at least 2 samples. The problem is that the user may have only passed us a buffer
+		// large enough to hold 1 sample. So, we are going to use out secret internal buffer in this case.
+		// We will point DMA to our buffer and do 1 extra round of sampling, then we will copy
+		// the second sample into the user's buffer.
+		if (!sequence->options || sequence->options->extra_samplings == 0) {
+			data->buffer = data->single_sampling_buffer;
+			data->buffer_size = sizeof data->single_sampling_buffer;
+			err = setup_dma(dev, data->channel_count * 2 * sizeof(uint16_t));
+		} else {
+			err = setup_dma(dev, get_needed_buffer_size(sequence, data->channel_count));
+		}
+
+		/* We need to make a non-zero extra_samplings option into zero, since we set DMA to do all extra samplings in one fell swoop.
+		 * The argument is const through, so we have to copy it and modify our local copy.
+		*/
+		if (sequence->options && sequence->options->extra_samplings) {
+			data->sequence_copy = *sequence;
+
+			if (sequence->options) {
+				data->sequence_options_copy = *sequence->options;
+				data->sequence_copy.options = &data->sequence_options_copy;
+			}
+
+			// We do all of these samplings
+			data->sequence_options_copy.extra_samplings = 0;
+		}
+	}
+
+	if (err) {
+		return err;
+	}
+
+	adc_context_start_read(&data->ctx, &data->sequence_copy);
+
+	err = adc_context_wait_for_completion(&data->ctx);
+
+	if (!sequence->options || sequence->options->extra_samplings == 0) {
+		memcpy(sequence->buffer, data->buffer + data->channel_count, data->channel_count * sizeof(uint16_t));
+	}
+
+	return err;
 }
 
 static void adc_context_start_sampling(struct adc_context *ctx)
@@ -702,19 +892,21 @@ static void adc_context_update_buffer_pointer(struct adc_context *ctx,
 	}
 }
 
-static void adc_stm32_isr(const struct device *dev)
+int adc_stm32_read_continuously(const struct device *dev, const struct adc_sequence *sequence, adc_stm32_read_continuous_half_complete_callback cb)
 {
 	struct adc_stm32_data *data = dev->data;
-	const struct adc_stm32_cfg *config =
-		(const struct adc_stm32_cfg *)dev->config;
-	ADC_TypeDef *adc = config->base;
+	int error;
 
-	*data->buffer++ = LL_ADC_REG_ReadConversionData32(adc);
+	data->continuous_mode = true;
+	data->continous_mode_half_complete_callback = cb;
 
-	adc_context_on_sampling_done(&data->ctx, dev);
+	adc_context_lock(&data->ctx, true, NULL);
+	error = start_read(dev, sequence);
+	adc_context_release(&data->ctx, error);
 
-	LOG_DBG("%s ISR triggered.", dev->name);
+	return error;
 }
+
 
 static int adc_stm32_read(const struct device *dev,
 			  const struct adc_sequence *sequence)
@@ -913,6 +1105,11 @@ static int adc_stm32_init(const struct device *dev)
 	 */
 	data->acq_time_index = -1;
 #endif
+
+	if (!device_is_ready(config->dma_dev)) {
+		LOG_ERR("DMA is not ready!");
+		return -EIO;
+	}
 
 	if (clock_control_on(clk,
 		(clock_control_subsys_t *) &config->pclken) != 0) {
@@ -1152,10 +1349,6 @@ static const struct adc_stm32_cfg adc_stm32_cfg_##index = {		\
 #define ADC_STM32_CONFIG(index)						\
 static void adc_stm32_cfg_func_##index(void)				\
 {									\
-	IRQ_CONNECT(DT_INST_IRQN(index),				\
-		    DT_INST_IRQ(index, priority),			\
-		    adc_stm32_isr, DEVICE_DT_INST_GET(index), 0);	\
-	irq_enable(DT_INST_IRQN(index));				\
 }									\
 									\
 static const struct adc_stm32_cfg adc_stm32_cfg_##index = {		\
@@ -1166,8 +1359,10 @@ static const struct adc_stm32_cfg adc_stm32_cfg_##index = {		\
 		.bus = DT_INST_CLOCKS_CELL(index, bus),			\
 	},								\
 	.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(index),			\
-	.has_temp_channel = DT_INST_PROP(index, has_temp_channel),		\
-	.has_vref_channel = DT_INST_PROP(index, has_vref_channel),		\
+	.has_temp_channel = DT_INST_PROP(index, has_temp_channel),	\
+	.has_vref_channel = DT_INST_PROP(index, has_vref_channel),	\
+	.dma_dev = DEVICE_DT_GET(DT_INST_DMAS_CTLR(index)),		\
+	.dma_channel = DT_INST_DMAS_CELL_BY_IDX(index, 0, channel),	\
 };
 #endif /* CONFIG_ADC_STM32_SHARED_IRQS */
 

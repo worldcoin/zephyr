@@ -41,5 +41,8 @@ properties:
       type: boolean
       description: Indicates if the ADC has a dedicated internal voltage reference channel.
 
+    dmas:
+      required: true
+
 io-channel-cells:
     - input

@@ -129,6 +129,15 @@ static void dma_stm32_irq_handler(const struct device *dev, uint32_t id)
 		stream->dma_callback(dev, stream->user_data,
 				     callback_arg, -EIO);
 	}
+
+	if (stm32_dma_is_tc_irq_active(dma, id) || stm32_dma_is_ht_irq_active(dma, id)) {
+		/* Interupt occured already. Likely that dma_callback took too long or
+		 * VERY nearly took too long. Regardless let's report this
+		 */
+		LOG_ERR("DMA callback took too long!");
+		stream->dma_callback(dev, stream->user_data,
+				     callback_arg, -EOVERFLOW);
+	}
 }
 
 #ifdef CONFIG_DMA_STM32_SHARED_IRQS
