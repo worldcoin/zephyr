@@ -63,6 +63,7 @@ LOG_MODULE_REGISTER(MAX31875, CONFIG_SENSOR_LOG_LEVEL);
 struct max31875_data {
 	int16_t sample;
 	uint16_t config_reg;
+    struct k_timer *data_format_change_timer;
 };
 
 struct max31875_config {
@@ -71,6 +72,11 @@ struct max31875_config {
 	uint8_t data_format;
 	uint8_t resolution;
 };
+
+static void data_format_change_function(struct k_timer *timer)
+{
+
+}
 
 static int max31875_reg_read(const struct max31875_config *cfg,
 			     uint8_t reg, uint16_t *val)
@@ -261,7 +267,10 @@ static int max31875_init(const struct device *dev)
 
 
 #define MAX31875_INST(inst)								  \
-	static struct max31875_data max31875_data_##inst;				  \
+    K_TIMER_DEFINE(data_format_change_timer_##inst, data_format_change_function, NULL); \
+	static struct max31875_data max31875_data_##inst = { \
+        .data_format_change_timer = data_format_change_timer_##inst \
+    };				  \
 	static const struct max31875_config max31875_config_##inst = {			  \
 		.bus = I2C_DT_SPEC_INST_GET(inst),					  \
 		.conversions_per_second = DT_INST_ENUM_IDX(inst, conversions_per_second), \
