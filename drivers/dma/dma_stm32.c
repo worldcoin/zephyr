@@ -121,8 +121,14 @@ static void dma_stm32_irq_handler(const struct device *dev, uint32_t id)
 		/* set status to 1 for half-complete transfer */
 		stream->dma_callback(dev, stream->user_data, callback_arg, 1);
 	} else if (stm32_dma_is_tc_irq_active(dma, id)) {
-#ifdef CONFIG_DMAMUX_STM32
-		stream->busy = false;
+#if CONFIG_DMAMUX_STM32
+		/*
+		 * Clear the busy flag only for transmissions (MEMORY_TO_PERIPHERAL)
+		 * because circular buffer never stops receiving as long as peripheral is enabled
+		 */
+		if (!stream->circular || stream->direction == MEMORY_TO_PERIPHERAL)
+			stream->busy = false;
+		}
 #endif
 		/* Let HAL DMA handle flags on its own */
 		if (!stream->hal_override) {
@@ -360,6 +366,7 @@ DMA_STM32_EXPORT_API int dma_stm32_configure(const struct device *dev,
 	stream->user_data       = config->user_data;
 	stream->src_size	= config->source_data_size;
 	stream->dst_size	= config->dest_data_size;
+	stream->circular	= config->cyclic || config->head_block->source_reload_en;
 
 	/* Check dest or source memory address, warn if 0 */
 	if ((config->head_block->source_address == 0)) {
@@ -431,7 +438,7 @@ DMA_STM32_EXPORT_API int dma_stm32_configure(const struct device *dev,
 	LOG_DBG("Channel (%d) peripheral inc (%x).",
 				id, DMA_InitStruct.PeriphOrM2MSrcIncMode);
 
-	if (config->head_block->source_reload_en) {
+	if (stream->circular) {
 		DMA_InitStruct.Mode = LL_DMA_MODE_CIRCULAR;
 	} else {
 		DMA_InitStruct.Mode = LL_DMA_MODE_NORMAL;
@@ -493,7 +500,7 @@ DMA_STM32_EXPORT_API int dma_stm32_configure(const struct device *dev,
 	LL_DMA_EnableIT_TC(dma, dma_stm32_id_to_stream(id));
 
 	/* Enable Half-Transfer irq if circular mode is enabled */
-	if (config->head_block->source_reload_en) {
+	if (stream->circular) {
 		LL_DMA_EnableIT_HT(dma, dma_stm32_id_to_stream(id));
 	}
 
