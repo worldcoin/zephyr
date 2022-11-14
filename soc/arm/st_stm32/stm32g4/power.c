@@ -4,19 +4,18 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  */
-#include <zephyr/zephyr.h>
+#include <zephyr/init.h>
+#include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
 #include <zephyr/pm/pm.h>
 #include <soc.h>
-#include <zephyr/init.h>
 
-#include <stm32g4xx_ll_utils.h>
+#include <clock_control/clock_stm32_ll_common.h>
 #include <stm32g4xx_ll_bus.h>
 #include <stm32g4xx_ll_cortex.h>
 #include <stm32g4xx_ll_pwr.h>
 #include <stm32g4xx_ll_system.h>
-#include <clock_control/clock_stm32_ll_common.h>
-
-#include <zephyr/logging/log.h>
+#include <stm32g4xx_ll_utils.h>
 LOG_MODULE_REGISTER(soc, CONFIG_SOC_LOG_LEVEL);
 
 /* Invoke Low Power/System Off specific Tasks */
@@ -43,8 +42,7 @@ __weak void pm_state_set(enum pm_state state, uint8_t substate_id)
 		k_cpu_idle();
 		break;
 	default:
-		LOG_DBG("Unsupported power state substate-id %u",
-			substate_id);
+		LOG_DBG("Unsupported power state substate-id %u", substate_id);
 		break;
 	}
 }
@@ -56,16 +54,15 @@ __weak void pm_state_exit_post_ops(enum pm_state state, uint8_t substate_id)
 		LOG_DBG("Unsupported power substate %u", state);
 	} else {
 		switch (substate_id) {
-		case 1:	/* STOP0 */
+		case 1: /* STOP0 */
 			__fallthrough;
-		case 2:	/* STOP1 */
+		case 2: /* STOP1 */
 			LL_LPM_DisableSleepOnExit();
 			/* Clear SLEEPDEEP bit */
 			LL_LPM_EnableSleep();
 			break;
 		default:
-			LOG_DBG("Unsupported power substate-id %u",
-				substate_id);
+			LOG_DBG("Unsupported power substate-id %u", substate_id);
 			break;
 		}
 		/* need to restore the clock */
