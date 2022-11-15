@@ -332,7 +332,7 @@ static int i2c_stm32_pm_action(const struct device *dev, enum pm_device_action a
 		/* Stop device clock. */
 		err = clock_control_off(data->clock, (clock_control_subsys_t)&config->pclken);
 		if (err != 0) {
-			LOG_ERR("Could not enable (LP)UART clock");
+			LOG_ERR("Could not enable I2C clock");
 			return err;
 		}
 
@@ -410,9 +410,20 @@ static void i2c_stm32_irq_config_func_##name(const struct device *dev)	\
 #define USE_TIMINGS(name)						\
 	.timings = (const struct i2c_config_timing *) i2c_timings_##name, \
 	.n_timings = ARRAY_SIZE(i2c_timings_##name),
+
+#ifdef CONFIG_PM
+#define STM32_I2C_PM_WAKEUP(node)						\
+	.wakeup_source = DT_PROP(node, wakeup_source),				\
+	.wakeup_line = COND_CODE_1(DT_NODE_HAS_PROP(node, wakeup_line),		\
+				   (DT_PROP(node, wakeup_line)),		\
+				   (STM32_EXTI_LINE_NONE)),
+#else
+#define STM32_I2C_PM_WAKEUP(node)
+#endif /* CONFIG_PM */
 #else /* V2 */
 #define DEFINE_TIMINGS(name)
 #define USE_TIMINGS(name)
+#define STM32_I2C_PM_WAKEUP(node)
 #endif /* V2 */
 
 #ifdef CONFIG_PM
@@ -440,7 +451,7 @@ static const struct i2c_stm32_config i2c_stm32_cfg_##name = {		\
 	STM32_I2C_IRQ_HANDLER_FUNCTION(name)				\
 	.bitrate = DT_PROP(DT_NODELABEL(name), clock_frequency),	\
 	.pcfg = PINCTRL_DT_DEV_CONFIG_GET(DT_NODELABEL(name)),		\
-	USE_TIMINGS(name)                				\
+	USE_TIMINGS(name)						\
 	STM32_I2C_PM_WAKEUP(DT_NODELABEL(name))				\
 };									\
 									\
