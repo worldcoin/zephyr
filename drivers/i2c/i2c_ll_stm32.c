@@ -7,6 +7,8 @@
 
 #include <zephyr/drivers/clock_control/stm32_clock_control.h>
 #include <zephyr/drivers/clock_control.h>
+#include <zephyr/drivers/interrupt_controller/exti_stm32.h>
+#include <zephyr/pm/device.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/kernel.h>
 #include <soc.h>
@@ -275,6 +277,21 @@ static int i2c_stm32_init(const struct device *dev)
 	LL_I2C_DisableReset(i2c);
 #endif
 
+#if defined(CONFIG_PM) && defined(IS_I2C_WAKEUP_FROMSTOP_INSTANCE)
+	if (cfg->wakeup_source) {
+		/* Enable ability to wakeup device in Stop mode
+		 * Effect depends on CONFIG_PM_DEVICE status:
+		 * CONFIG_PM_DEVICE=n : Always active
+		 * CONFIG_PM_DEVICE=y : Controlled by pm_device_wakeup_enable()
+		 */
+		LL_I2C_EnableWakeUpFromStop(cfg->i2c);
+		if (cfg->wakeup_line != STM32_EXTI_LINE_NONE) {
+			/* Prepare the WAKEUP with the expected EXTI line */
+			LL_EXTI_EnableIT_0_31(BIT(cfg->wakeup_line));
+		}
+	}
+#endif /* CONFIG_PM */
+
 	bitrate_cfg = i2c_map_dt_bitrate(cfg->bitrate);
 
 	ret = i2c_stm32_runtime_configure(dev, I2C_MODE_CONTROLLER | bitrate_cfg);
@@ -285,6 +302,57 @@ static int i2c_stm32_init(const struct device *dev)
 
 	return 0;
 }
+
+#ifdef CONFIG_PM_DEVICE
+
+static int i2c_stm32_pm_action(const struct device *dev, enum pm_device_action action)
+{
+	const struct i2c_stm32_config *config = dev->config;
+	struct i2c_stm32_data *data = dev->data;
+	int err;
+
+	switch (action) {
+	case PM_DEVICE_ACTION_RESUME:
+		/* Set pins to active state */
+		err = pinctrl_apply_state(config->pcfg, PINCTRL_STATE_DEFAULT);
+		if (err < 0) {
+			return err;
+		}
+		/* enable clock */
+		err = clock_control_on(data->clock, (clock_control_subsys_t)&config->pclken);
+		if (err != 0) {
+			LOG_ERR("Could not enable I2C clock");
+			return err;
+		}
+		break;
+	case PM_DEVICE_ACTION_SUSPEND:
+		while (LL_I2C_IsEnabled(config->i2c) == 1) {
+		}
+
+		/* Stop device clock. */
+		err = clock_control_off(data->clock, (clock_control_subsys_t)&config->pclken);
+		if (err != 0) {
+			LOG_ERR("Could not enable I2C clock");
+			return err;
+		}
+
+		/* Move pins to sleep state */
+		err = pinctrl_apply_state(config->pcfg, PINCTRL_STATE_SLEEP);
+		if (err == -ENOENT) {
+			/* Warn but don't block PM suspend */
+			LOG_WRN("I2C pinctrl sleep state not available ");
+		} else if (err < 0) {
+			return err;
+		}
+		break;
+	default:
+		return -ENOTSUP;
+	}
+
+	return 0;
+}
+
+#endif
 
 /* Macros for I2C instance declaration */
 
@@ -342,9 +410,20 @@ static void i2c_stm32_irq_config_func_##name(const struct device *dev)	\
 #define USE_TIMINGS(name)						\
 	.timings = (const struct i2c_config_timing *) i2c_timings_##name, \
 	.n_timings = ARRAY_SIZE(i2c_timings_##name),
+
+#ifdef CONFIG_PM
+#define STM32_I2C_PM_WAKEUP(node)						\
+	.wakeup_source = DT_PROP(node, wakeup_source),				\
+	.wakeup_line = COND_CODE_1(DT_NODE_HAS_PROP(node, wakeup_line),		\
+				   (DT_PROP(node, wakeup_line)),		\
+				   (STM32_EXTI_LINE_NONE)),
+#else
+#define STM32_I2C_PM_WAKEUP(node)
+#endif /* CONFIG_PM */
 #else /* V2 */
 #define DEFINE_TIMINGS(name)
 #define USE_TIMINGS(name)
+#define STM32_I2C_PM_WAKEUP(node)
 #endif /* V2 */
 
 #define STM32_I2C_INIT(name)						\
@@ -364,12 +443,15 @@ static const struct i2c_stm32_config i2c_stm32_cfg_##name = {		\
 	.bitrate = DT_PROP(DT_NODELABEL(name), clock_frequency),	\
 	.pcfg = PINCTRL_DT_DEV_CONFIG_GET(DT_NODELABEL(name)),		\
 	USE_TIMINGS(name)						\
+	STM32_I2C_PM_WAKEUP(DT_NODELABEL(name))				\
 };									\
 									\
 static struct i2c_stm32_data i2c_stm32_dev_data_##name;			\
+PM_DEVICE_DT_DEFINE(DT_NODELABEL(name), i2c_stm32_pm_action);		\
 									\
 I2C_DEVICE_DT_DEFINE(DT_NODELABEL(name), i2c_stm32_init,		\
-		    NULL, &i2c_stm32_dev_data_##name,			\
+		    PM_DEVICE_DT_GET(DT_NODELABEL(name)),		\
+		    &i2c_stm32_dev_data_##name,				\
 		    &i2c_stm32_cfg_##name,				\
 		    POST_KERNEL, CONFIG_I2C_INIT_PRIORITY,		\
 		    &api_funcs);					\

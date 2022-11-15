@@ -37,6 +37,11 @@ struct i2c_stm32_config {
 	const struct i2c_config_timing *timings;
 	size_t n_timings;
 #endif
+#if defined(CONFIG_PM)
+	/* Device defined as wake-up source */
+	bool wakeup_source;
+	uint32_t wakeup_line;
+#endif /* CONFIG_PM */
 };
 
 struct i2c_stm32_data {
