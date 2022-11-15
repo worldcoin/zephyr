@@ -40,6 +40,8 @@ struct i2c_stm32_config {
 };
 
 struct i2c_stm32_data {
+	/* clock device */
+	const struct device *clock;
 #ifdef CONFIG_I2C_STM32_INTERRUPT
 	struct k_sem device_sync_sem;
 #endif
