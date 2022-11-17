@@ -215,6 +215,8 @@ static const struct i2c_driver_api api_funcs = {
 #endif
 };
 
+#ifdef CONFIG_PM_DEVICE
+
 static int i2c_stm32_suspend(const struct device *dev)
 {
 	int ret;
@@ -239,6 +241,8 @@ static int i2c_stm32_suspend(const struct device *dev)
 
 	return 0;
 }
+
+#endif
 
 static int i2c_stm32_activate(const struct device *dev)
 {
