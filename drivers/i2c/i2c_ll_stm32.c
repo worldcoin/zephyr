@@ -9,6 +9,7 @@
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/interrupt_controller/exti_stm32.h>
 #include <zephyr/pm/device.h>
+#include <zephyr/pm/device_runtime.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/kernel.h>
 #include <soc.h>
@@ -54,11 +55,18 @@ int i2c_stm32_runtime_configure(const struct device *dev, uint32_t config)
 
 	data->dev_config = config;
 
+	ret = pm_device_runtime_get(dev);
+	if (ret < 0) {
+		return ret;
+	}
+
 	k_sem_take(&data->bus_mutex, K_FOREVER);
 	LL_I2C_Disable(i2c);
 	LL_I2C_SetMode(i2c, LL_I2C_MODE_I2C);
 	ret = stm32_i2c_configure_timing(dev, clock);
 	k_sem_give(&data->bus_mutex);
+
+	pm_device_runtime_put(dev);
 
 	return ret;
 }
@@ -166,6 +174,11 @@ static int i2c_stm32_transfer(const struct device *dev, struct i2c_msg *msg,
 		return ret;
 	}
 
+	ret = pm_device_runtime_get(dev);
+	if (ret < 0) {
+		return ret;
+	}
+
 	/* Send out messages */
 	k_sem_take(&data->bus_mutex, K_FOREVER);
 
@@ -187,6 +200,9 @@ static int i2c_stm32_transfer(const struct device *dev, struct i2c_msg *msg,
 	}
 
 	k_sem_give(&data->bus_mutex);
+
+	pm_device_runtime_put(dev);
+
 	return ret;
 }
 
@@ -199,6 +215,55 @@ static const struct i2c_driver_api api_funcs = {
 #endif
 };
 
+static int i2c_stm32_suspend(const struct device *dev)
+{
+	int ret;
+	const struct i2c_stm32_config *cfg = dev->config;
+	const struct device *const clk = DEVICE_DT_GET(STM32_CLOCK_CONTROL_NODE);
+
+	/* Stop device clock. */
+	ret = clock_control_off(clk, (clock_control_subsys_t)&cfg->pclken);
+	if (ret < 0) {
+		LOG_ERR("failure disabling I2C clock");
+		return ret;
+	}
+
+	/* Move pins to sleep state */
+	ret = pinctrl_apply_state(cfg->pcfg, PINCTRL_STATE_SLEEP);
+	if (ret == -ENOENT) {
+		/* Warn but don't block suspend */
+		LOG_WRN("I2C pinctrl sleep state not available ");
+	} else if (ret < 0) {
+		return ret;
+	}
+
+	return 0;
+}
+
+static int i2c_stm32_activate(const struct device *dev)
+{
+	int ret;
+	const struct i2c_stm32_config *cfg = dev->config;
+	const struct device *const clk = DEVICE_DT_GET(STM32_CLOCK_CONTROL_NODE);
+
+	/* Move pins to active/default state */
+	ret = pinctrl_apply_state(cfg->pcfg, PINCTRL_STATE_DEFAULT);
+	if (ret < 0) {
+		LOG_ERR("I2C pinctrl setup failed (%d)", ret);
+		return ret;
+	}
+
+	/* Enable device clock. */
+	ret = clock_control_on(clk, (clock_control_subsys_t *)&cfg->pclken);
+	if (ret < 0) {
+		LOG_ERR("failure enabling I2C clock");
+		return ret;
+	}
+
+	return 0;
+}
+
+
 static int i2c_stm32_init(const struct device *dev)
 {
 	const struct i2c_stm32_config *cfg = dev->config;
@@ -209,13 +274,6 @@ static int i2c_stm32_init(const struct device *dev)
 	k_sem_init(&data->device_sync_sem, 0, K_SEM_MAX_LIMIT);
 	cfg->irq_config_func(dev);
 #endif
-
-	/* Configure dt provided device signals when available */
-	ret = pinctrl_apply_state(cfg->pcfg, PINCTRL_STATE_DEFAULT);
-	if (ret < 0) {
-		LOG_ERR("I2C pinctrl setup failed (%d)", ret);
-		return ret;
-	}
 
 	/*
 	 * initialize mutex used when multiple transfers
@@ -231,10 +289,7 @@ static int i2c_stm32_init(const struct device *dev)
 		return -ENODEV;
 	}
 
-	if (clock_control_on(data->clock, (clock_control_subsys_t *)&cfg->pclken) != 0) {
-		LOG_ERR("i2c: failure enabling clock");
-		return -EIO;
-	}
+	i2c_stm32_activate(dev);
 
 #if defined(CONFIG_SOC_SERIES_STM32F3X) || defined(CONFIG_SOC_SERIES_STM32F0X)
 	/*
@@ -300,6 +355,12 @@ static int i2c_stm32_init(const struct device *dev)
 		return ret;
 	}
 
+#if IS_ENABLED(CONFIG_PM_DEVICE_RUNTIME)
+	i2c_stm32_suspend(dev);
+	pm_device_init_suspended(dev);
+	(void)pm_device_runtime_enable(dev);
+#endif
+
 	return 0;
 }
 
@@ -307,49 +368,31 @@ static int i2c_stm32_init(const struct device *dev)
 
 static int i2c_stm32_pm_action(const struct device *dev, enum pm_device_action action)
 {
-	const struct i2c_stm32_config *config = dev->config;
-	struct i2c_stm32_data *data = dev->data;
 	int err;
+	const struct i2c_stm32_config *cfg = dev->config;
 
 	switch (action) {
 	case PM_DEVICE_ACTION_RESUME:
-		/* Set pins to active state */
-		err = pinctrl_apply_state(config->pcfg, PINCTRL_STATE_DEFAULT);
-		if (err < 0) {
-			return err;
-		}
-		/* enable clock */
-		err = clock_control_on(data->clock, (clock_control_subsys_t)&config->pclken);
-		if (err != 0) {
-			LOG_ERR("Could not enable I2C clock");
-			return err;
-		}
+		err = i2c_stm32_activate(dev);
 		break;
 	case PM_DEVICE_ACTION_SUSPEND:
-		while (LL_I2C_IsEnabled(config->i2c) == 1) {
+		/* Do not suspend if I2C is enabled because it means the driver is waiting for
+		 * an interrupt or a timeout expiration. We can conveniently check the
+		 * I2C state here because the driver disables I2C as soon as it can
+		 * free the peripheral.
+		 * If PM_DEVICE_RUNTIME is enabled, suspend action shouldn't be used until allowed
+		 * in any case.
+		 */
+		if (LL_I2C_IsEnabled(cfg->i2c) != 0) {
+			return -EBUSY;
 		}
-
-		/* Stop device clock. */
-		err = clock_control_off(data->clock, (clock_control_subsys_t)&config->pclken);
-		if (err != 0) {
-			LOG_ERR("Could not enable I2C clock");
-			return err;
-		}
-
-		/* Move pins to sleep state */
-		err = pinctrl_apply_state(config->pcfg, PINCTRL_STATE_SLEEP);
-		if (err == -ENOENT) {
-			/* Warn but don't block PM suspend */
-			LOG_WRN("I2C pinctrl sleep state not available ");
-		} else if (err < 0) {
-			return err;
-		}
+		err = i2c_stm32_suspend(dev);
 		break;
 	default:
 		return -ENOTSUP;
 	}
 
-	return 0;
+	return err;
 }
 
 #endif
