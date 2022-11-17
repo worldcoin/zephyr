@@ -9,6 +9,7 @@
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/interrupt_controller/exti_stm32.h>
 #include <zephyr/pm/device.h>
+#include <zephyr/pm/device_runtime.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/kernel.h>
 #include <soc.h>
@@ -54,11 +55,18 @@ int i2c_stm32_runtime_configure(const struct device *dev, uint32_t config)
 
 	data->dev_config = config;
 
+	ret = pm_device_runtime_get(dev);
+	if (ret < 0) {
+		return ret;
+	}
+
 	k_sem_take(&data->bus_mutex, K_FOREVER);
 	LL_I2C_Disable(i2c);
 	LL_I2C_SetMode(i2c, LL_I2C_MODE_I2C);
 	ret = stm32_i2c_configure_timing(dev, clock);
 	k_sem_give(&data->bus_mutex);
+
+	pm_device_runtime_put(dev);
 
 	return ret;
 }
@@ -166,6 +174,11 @@ static int i2c_stm32_transfer(const struct device *dev, struct i2c_msg *msg,
 		return ret;
 	}
 
+	ret = pm_device_runtime_get(dev);
+	if (ret < 0) {
+		return ret;
+	}
+
 	/* Send out messages */
 	k_sem_take(&data->bus_mutex, K_FOREVER);
 
@@ -187,6 +200,9 @@ static int i2c_stm32_transfer(const struct device *dev, struct i2c_msg *msg,
 	}
 
 	k_sem_give(&data->bus_mutex);
+
+	pm_device_runtime_put(dev);
+
 	return ret;
 }
 
@@ -337,6 +353,12 @@ static int i2c_stm32_init(const struct device *dev)
 		LOG_ERR("i2c: failure initializing");
 		return ret;
 	}
+
+#if IS_ENABLED(CONFIG_PM_DEVICE_RUNTIME)
+	i2c_stm32_suspend(dev);
+	pm_device_init_suspended(dev);
+	(void)pm_device_runtime_enable(dev);
+#endif
 
 	return 0;
 }
