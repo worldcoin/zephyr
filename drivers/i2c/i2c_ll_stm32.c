@@ -7,6 +7,7 @@
 
 #include <zephyr/drivers/clock_control/stm32_clock_control.h>
 #include <zephyr/drivers/clock_control.h>
+#include <zephyr/drivers/interrupt_controller/exti_stm32.h>
 #include <zephyr/pm/device.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/kernel.h>
@@ -314,6 +315,21 @@ static int i2c_stm32_init(const struct device *dev)
 	LL_I2C_DisableReset(i2c);
 #endif
 
+#if defined(CONFIG_PM) && defined(IS_I2C_WAKEUP_FROMSTOP_INSTANCE)
+	if (cfg->wakeup_source) {
+		/* Enable ability to wakeup device in Stop mode
+		 * Effect depends on CONFIG_PM_DEVICE status:
+		 * CONFIG_PM_DEVICE=n : Always active
+		 * CONFIG_PM_DEVICE=y : Controlled by pm_device_wakeup_enable()
+		 */
+		LL_I2C_EnableWakeUpFromStop(cfg->i2c);
+		if (cfg->wakeup_line != STM32_EXTI_LINE_NONE) {
+			/* Prepare the WAKEUP with the expected EXTI line */
+			LL_EXTI_EnableIT_0_31(BIT(cfg->wakeup_line));
+		}
+	}
+#endif /* CONFIG_PM */
+
 	bitrate_cfg = i2c_map_dt_bitrate(cfg->bitrate);
 
 	ret = i2c_stm32_runtime_configure(dev, I2C_MODE_CONTROLLER | bitrate_cfg);
@@ -414,9 +430,20 @@ static void i2c_stm32_irq_config_func_##name(const struct device *dev)	\
 #define USE_TIMINGS(name)						\
 	.timings = (const struct i2c_config_timing *) i2c_timings_##name, \
 	.n_timings = ARRAY_SIZE(i2c_timings_##name),
+
+#ifdef CONFIG_PM
+#define STM32_I2C_PM_WAKEUP(node)						\
+	.wakeup_source = DT_PROP(node, wakeup_source),				\
+	.wakeup_line = COND_CODE_1(DT_NODE_HAS_PROP(node, wakeup_line),		\
+				   (DT_PROP(node, wakeup_line)),		\
+				   (STM32_EXTI_LINE_NONE)),
+#else
+#define STM32_I2C_PM_WAKEUP(node)
+#endif /* CONFIG_PM */
 #else /* V2 */
 #define DEFINE_TIMINGS(name)
 #define USE_TIMINGS(name)
+#define STM32_I2C_PM_WAKEUP(node)
 #endif /* V2 */
 
 #define STM32_I2C_INIT(name)						\
@@ -436,6 +463,7 @@ static const struct i2c_stm32_config i2c_stm32_cfg_##name = {		\
 	.bitrate = DT_PROP(DT_NODELABEL(name), clock_frequency),	\
 	.pcfg = PINCTRL_DT_DEV_CONFIG_GET(DT_NODELABEL(name)),		\
 	USE_TIMINGS(name)						\
+	STM32_I2C_PM_WAKEUP(DT_NODELABEL(name))				\
 };									\
 									\
 static struct i2c_stm32_data i2c_stm32_dev_data_##name;			\

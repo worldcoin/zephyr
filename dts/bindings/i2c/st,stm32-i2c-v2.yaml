@@ -44,3 +44,13 @@ properties:
                           <64000000 I2C_BITRATE_FAST 0x00603D56>,
                           <56000000 I2C_BITRATE_STANDARD 0x10606DA4>,
                           <56000000 I2C_BITRATE_FAST 0x00501D63>;
+
+    wakeup-line:
+        type: int
+        required: false
+        description: |
+            EXTI line number matching the device wakeup interrupt mask register.
+            This property is required on stm32 devices where the wakeup interrupt signal could be
+            configured masked at boot (sm32wl55 for instance), preventing the device to wakeup
+            the core from stop mode(s).
+            Valid range: 0 - 31
