@@ -29,3 +29,4 @@ PyGithub
 
 # used to generate devicetree dependency graphs
 graphviz
+setuptools>=65.5.1 # not directly required, pinned by Snyk to avoid a vulnerability
