@@ -61,9 +61,23 @@ int i2c_stm32_runtime_configure(const struct device *dev, uint32_t config)
 	}
 
 	k_sem_take(&data->bus_mutex, K_FOREVER);
+
+#ifdef CONFIG_PM_DEVICE_RUNTIME
+	(void)pm_device_runtime_get(dev);
+#else
+	pm_device_busy_set(dev);
+#endif
+
 	LL_I2C_Disable(i2c);
 	LL_I2C_SetMode(i2c, LL_I2C_MODE_I2C);
 	ret = stm32_i2c_configure_timing(dev, clock);
+
+#ifdef CONFIG_PM_DEVICE_RUNTIME
+	(void)pm_device_runtime_put(dev);
+#else
+	pm_device_busy_clear(dev);
+#endif
+
 	k_sem_give(&data->bus_mutex);
 
 	pm_device_runtime_put(dev);
@@ -182,6 +196,13 @@ static int i2c_stm32_transfer(const struct device *dev, struct i2c_msg *msg,
 	/* Send out messages */
 	k_sem_take(&data->bus_mutex, K_FOREVER);
 
+	/* Prevent driver from being suspended by PM until I2C transaction is complete */
+#ifdef CONFIG_PM_DEVICE_RUNTIME
+	(void)pm_device_runtime_get(dev);
+#else
+	pm_device_busy_set(dev);
+#endif
+
 	current = msg;
 
 	while (num_msgs > 0) {
@@ -199,9 +220,13 @@ static int i2c_stm32_transfer(const struct device *dev, struct i2c_msg *msg,
 		num_msgs--;
 	}
 
-	k_sem_give(&data->bus_mutex);
+#ifdef CONFIG_PM_DEVICE_RUNTIME
+	(void)pm_device_runtime_put(dev);
+#else
+	pm_device_busy_clear(dev);
+#endif
 
-	pm_device_runtime_put(dev);
+	k_sem_give(&data->bus_mutex);
 
 	return ret;
 }
@@ -359,7 +384,7 @@ static int i2c_stm32_init(const struct device *dev)
 		return ret;
 	}
 
-#if IS_ENABLED(CONFIG_PM_DEVICE_RUNTIME)
+#ifdef CONFIG_PM_DEVICE_RUNTIME
 	i2c_stm32_suspend(dev);
 	pm_device_init_suspended(dev);
 	(void)pm_device_runtime_enable(dev);
@@ -373,23 +398,12 @@ static int i2c_stm32_init(const struct device *dev)
 static int i2c_stm32_pm_action(const struct device *dev, enum pm_device_action action)
 {
 	int err;
-	const struct i2c_stm32_config *cfg = dev->config;
 
 	switch (action) {
 	case PM_DEVICE_ACTION_RESUME:
 		err = i2c_stm32_activate(dev);
 		break;
 	case PM_DEVICE_ACTION_SUSPEND:
-		/* Do not suspend if I2C is enabled because it means the driver is waiting for
-		 * an interrupt or a timeout expiration. We can conveniently check the
-		 * I2C state here because the driver disables I2C as soon as it can
-		 * free the peripheral.
-		 * If PM_DEVICE_RUNTIME is enabled, suspend action shouldn't be used until allowed
-		 * in any case.
-		 */
-		if (LL_I2C_IsEnabled(cfg->i2c) != 0) {
-			return -EBUSY;
-		}
 		err = i2c_stm32_suspend(dev);
 		break;
 	default:
