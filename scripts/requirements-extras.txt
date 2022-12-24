@@ -32,3 +32,4 @@ graphviz
 
 # used to generate CBOR encoders and decoders, e.g. lwm2m_senml_cbor.
 zcbor>=0.6.0
+setuptools>=65.5.1 # not directly required, pinned by Snyk to avoid a vulnerability
