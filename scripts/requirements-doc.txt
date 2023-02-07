@@ -12,3 +12,4 @@ sphinx-copybutton
 # YAML validation. Used by zephyr_module.
 PyYAML>=5.1
 pykwalify
+setuptools>=65.5.1 # not directly required, pinned by Snyk to avoid a vulnerability
