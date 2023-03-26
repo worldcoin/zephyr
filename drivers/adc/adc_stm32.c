@@ -649,6 +649,49 @@ static void adc_stm32_teardown_channels(const struct device *dev)
 	adc_stm32_enable(adc);
 }
 
+#ifdef CONFIG_ADC_STM32_DMA
+static void dma_callback(const struct device *dev, void *user_data,
+			 uint32_t channel, int status)
+{
+	/* user_data directly holds the adc device */
+	struct adc_stm32_data *data = user_data;
+	const struct adc_stm32_cfg *config = dev->config;
+	ADC_TypeDef *adc = (ADC_TypeDef *)config->base;
+
+	LOG_DBG("dma callback");
+
+	if (channel == data->dma.channel) {
+#if !defined(CONFIG_SOC_SERIES_STM32F1X)
+		if (LL_ADC_IsActiveFlag_OVR(adc) || (status >= 0)) {
+#else
+		if (status >= 0) {
+#endif /* !defined(CONFIG_SOC_SERIES_STM32F1X) */
+			data->samples_count = data->channel_count;
+			data->buffer += data->channel_count;
+			/* Stop the DMA engine, only to start it again when the callback returns
+			 * ADC_ACTION_REPEAT or ADC_ACTION_CONTINUE, or the number of samples
+			 * haven't been reached Starting the DMA engine is done
+			 * within adc_context_start_sampling
+			 */
+			dma_stop(data->dma.dma_dev, data->dma.channel);
+#if !defined(CONFIG_SOC_SERIES_STM32F1X)
+			LL_ADC_ClearFlag_OVR(adc);
+#endif /* !defined(CONFIG_SOC_SERIES_STM32F1X) */
+			/* No need to invalidate the cache because it's assumed that
+			 * the address is in a non-cacheable SRAM region.
+			 */
+			adc_context_on_sampling_done(&data->ctx, dev);
+		} else if (status < 0) {
+			LOG_ERR("DMA sampling complete, but DMA reported error %d", status);
+			data->dma_error = status;
+			LL_ADC_REG_StopConversion(adc);
+			dma_stop(data->dma.dma_dev, data->dma.channel);
+			adc_context_complete(&data->ctx, status);
+		}
+	}
+}
+#endif /* CONFIG_ADC_STM32_DMA */
+
 static int start_read(const struct device *dev,
 		      const struct adc_sequence *sequence)
 {
