@@ -1177,6 +1177,8 @@ static inline void rtio_cqe_submit(struct rtio *r, int result, void *userdata, u
 static inline int rtio_sqe_rx_buf(const struct rtio_iodev_sqe *iodev_sqe, uint32_t min_buf_len,
 				  uint32_t max_buf_len, uint8_t **buf, uint32_t *buf_len)
 {
+	ARG_UNUSED(max_buf_len);
+
 	struct rtio_sqe *sqe = (struct rtio_sqe *)&iodev_sqe->sqe;
 
 #ifdef CONFIG_RTIO_SYS_MEM_BLOCKS
@@ -1230,6 +1232,10 @@ __syscall void rtio_release_buffer(struct rtio *r, void *buff, uint32_t buff_len
 
 static inline void z_impl_rtio_release_buffer(struct rtio *r, void *buff, uint32_t buff_len)
 {
+	ARG_UNUSED(r);
+	ARG_UNUSED(buff);
+	ARG_UNUSED(buff_len);
+
 #ifdef CONFIG_RTIO_SYS_MEM_BLOCKS
 	if (r == NULL || buff == NULL || r->block_pool == NULL || buff_len == 0) {
 		return;
