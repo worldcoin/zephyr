@@ -30,4 +30,19 @@ config VL53L1X_XSHUT
 	  Enable to use the xshut pin on the VL53L1X. If not, the pin should be
 	  connected to VDD.
 
+config VL53L1X_PROXIMITY_THRESHOLD
+    int "Proximity threshold in millimeters"
+    default 100
+    help
+        Threshold used for proximity detection when sensor is used with SENSOR_CHAN_PROX.
+
+config VL53L1X_SIGNAL_SPAD_RATIO_THRESHOLD
+	int "Signal SPAD ratio threshold"
+	default 300
+	help
+	  The signal to SPAD-count ratio is used for proximity detection when sensor is used with SENSOR_CHAN_PROX.
+	  It helps remove false positives when the sensor is used in a dark environment and spits out phantom readings.
+	  The ratio is calculated as follows:
+	  	ratio = (Signal rate / SPAD count) * 1000
+
 endif # VL53L1X
