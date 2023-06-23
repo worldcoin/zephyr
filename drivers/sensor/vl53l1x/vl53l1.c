@@ -303,7 +303,9 @@ static int vl53l1x_sample_fetch(const struct device *dev,
 	struct vl53l1x_data *drv_data = dev->data;
 	VL53L1_Error ret;
 
-	__ASSERT_NO_MSG(chan == SENSOR_CHAN_DISTANCE);
+	__ASSERT_NO_MSG(chan == SENSOR_CHAN_ALL ||
+			chan == SENSOR_CHAN_DISTANCE ||
+			chan == SENSOR_CHAN_PROX);
 
 	/* Will immediately stop current measurement */
 	ret = VL53L1_StopMeasurement(&drv_data->vl53l1x);
@@ -338,7 +340,7 @@ static int vl53l1x_channel_get(const struct device *dev,
 	struct vl53l1x_data *drv_data = dev->data;
 	VL53L1_Error ret;
 
-	__ASSERT_NO_MSG(chan == SENSOR_CHAN_DISTANCE);
+	__ASSERT_NO_MSG(chan == SENSOR_CHAN_DISTANCE || chan == SENSOR_CHAN_PROX);
 
 	/* Calling VL53L1_WaitMeasurementDataReady regardless of using interrupt or
 	 * polling method ensures user does not have to consider the time between
@@ -351,16 +353,54 @@ static int vl53l1x_channel_get(const struct device *dev,
 	}
 
 	if (IS_ENABLED(CONFIG_VL53L1X_INTERRUPT_MODE) == 0) {
-		/* Using driver poling mode */
+		/* Using driver polling mode */
 		ret = vl53l1x_read_sensor(drv_data);
 		if (ret != VL53L1_ERROR_NONE) {
 			return -ENODATA;
 		}
 	}
 
-	val->val1 = (int32_t)(drv_data->data.RangeMilliMeter);
-	/* RangeFractionalPart not implemented in API */
+	double SigmaMilliMeter = (double)drv_data->data.SigmaMilliMeter / (double)(1 << 16);
+	double SignalRateRtnMegaCps =
+		(double)drv_data->data.SignalRateRtnMegaCps / (double)(1 << 16);
+	double AmbientRateRtnMegaCps =
+		(double)drv_data->data.AmbientRateRtnMegaCps / (double)(1 << 16);
+
+	/* Discriminate whether the distance is phantom data
+	 * We use the signal rate to SPAD count ratio to determine if the
+	 * measurement is valid.
+	 */
+	int signal_to_spad_ratio = 0;
+
+	if (drv_data->data.RangeStatus == 0) {
+		signal_to_spad_ratio = (int)((SignalRateRtnMegaCps / ((double)drv_data->data.EffectiveSpadRtnCount / 256.0)) * 1000.0);
+	} else {
+		return -ENODATA;
+	}
+
+	/* output data in CSV format for debugging
+	 * status,rangeMm,range quality,sigma,signal rate,ambient light,SPAD #,valid,ok/ko
+	 */
+	LOG_WRN("%01d,%04u,%03u,%.03f,%.03f,%.03f,%06u,%04u,%s", drv_data->data.RangeStatus,
+		drv_data->data.RangeMilliMeter, drv_data->data.RangeQualityLevel, SigmaMilliMeter,
+		SignalRateRtnMegaCps, AmbientRateRtnMegaCps, drv_data->data.EffectiveSpadRtnCount / 256, signal_to_spad_ratio,
+		signal_to_spad_ratio > CONFIG_VL53L1X_SIGNAL_SPAD_RATIO_THRESHOLD ? "🟢" : "🔴");
+
+	val->val1 = 0;
 	val->val2 = 0;
+
+	if (chan == SENSOR_CHAN_PROX) {
+		if (signal_to_spad_ratio > CONFIG_VL53L1X_SIGNAL_SPAD_RATIO_THRESHOLD &&
+		    drv_data->data.RangeMilliMeter <= CONFIG_VL53L1X_PROXIMITY_THRESHOLD) {
+			val->val1 = 1;
+		}
+	} else if (chan == SENSOR_CHAN_DISTANCE) {
+		val->val1 = (int32_t)(drv_data->data.RangeMilliMeter);
+		/* RangeFractionalPart not implemented in API */
+		val->val2 = 0;
+	} else {
+		return -ENOTSUP;
+	}
 
 	return 0;
 }
