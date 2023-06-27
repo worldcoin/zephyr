@@ -39,6 +39,7 @@ struct vl53l1x_data {
 	VL53L1_Dev_t vl53l1x;
 	VL53L1_RangingMeasurementData_t data;
 	VL53L1_DistanceModes distance_mode;
+	uint32_t autonomous_intermeasurement_period_ms; /* in ms, 0 in ranging mode */
 #ifdef CONFIG_VL53L1X_INTERRUPT_MODE
 	struct gpio_callback gpio_cb;
 	struct k_work work;
@@ -116,73 +117,6 @@ static int vl53l1x_init_interrupt(const struct device *dev)
 }
 #endif
 
-static int vl53l1x_initialize(const struct device *dev)
-{
-	struct vl53l1x_data *drv_data = dev->data;
-	VL53L1_Error ret;
-	VL53L1_DeviceInfo_t vl53l1x_dev_info;
-
-	LOG_DBG("[%s] Initializing ", dev->name);
-
-	/* Pull XSHUT high to start the sensor */
-#ifdef CONFIG_VL53L1X_XSHUT
-	const struct vl53l1x_config *const config = dev->config;
-
-	if (config->xshut.port) {
-		int gpio_ret = gpio_pin_set_dt(&config->xshut, 1);
-
-		if (gpio_ret < 0) {
-			LOG_ERR("[%s] Unable to set XSHUT gpio (error %d)", dev->name, gpio_ret);
-			return -EIO;
-		}
-		/* Boot duration is 1.2 ms max */
-		k_sleep(K_MSEC(2));
-	}
-#endif
-
-	/* ONE TIME device initialization.
-	 * To be called ONLY ONCE after device is brought out of reset
-	 */
-	ret = VL53L1_DataInit(&drv_data->vl53l1x);
-	if (ret != VL53L1_ERROR_NONE) {
-		LOG_ERR("[%s] VL53L1X_DataInit return error (%d)", dev->name, ret);
-		return -ENOTSUP;
-	}
-
-	/* Do basic device init */
-	ret = VL53L1_StaticInit(&drv_data->vl53l1x);
-	if (ret != VL53L1_ERROR_NONE) {
-		LOG_ERR("[%s] VL53L1_StaticInit return error (%d)", dev->name, ret);
-		return -ENOTSUP;
-	}
-
-	/* Get info from sensor */
-	(void)memset(&vl53l1x_dev_info, 0, sizeof(VL53L1_DeviceInfo_t));
-
-	ret = VL53L1_GetDeviceInfo(&drv_data->vl53l1x, &vl53l1x_dev_info);
-	if (ret != VL53L1_ERROR_NONE) {
-		LOG_ERR("[%s] VL53L1_GetDeviceInfo return error (%d)", dev->name, ret);
-		return -ENODEV;
-	}
-
-	LOG_DBG("[%s] VL53L1X_GetDeviceInfo returned %d", dev->name, ret);
-	LOG_DBG("   Device Name : %s", vl53l1x_dev_info.Name);
-	LOG_DBG("   Device Type : %s", vl53l1x_dev_info.Type);
-	LOG_DBG("   Device ID : %s", vl53l1x_dev_info.ProductId);
-	LOG_DBG("   ProductRevisionMajor : %d", vl53l1x_dev_info.ProductRevisionMajor);
-	LOG_DBG("   ProductRevisionMinor : %d", vl53l1x_dev_info.ProductRevisionMinor);
-
-	/* Set default distance mode */
-	drv_data->distance_mode = VL53L1_DISTANCEMODE_LONG;
-	ret = VL53L1_SetDistanceMode(&drv_data->vl53l1x, drv_data->distance_mode);
-	if (ret != VL53L1_ERROR_NONE) {
-		LOG_ERR("[%s] VL53L1_SetDistanceMode return error (%d)", dev->name, ret);
-		return -EINVAL;
-	}
-
-	return 0;
-}
-
 /* Mapping is 1:1 with the API.
  * From VL531X datasheet:
  *          | Max distance  | Max distance in
@@ -259,6 +193,72 @@ static int vl53l1x_set_roi(const struct device *dev,
 	return 0;
 }
 
+static int vl53l1x_set_inter_measurement_freq(const struct device *dev,
+						const struct sensor_value *val)
+{
+	struct vl53l1x_data *drv_data = dev->data;
+	VL53L1_Error ret;
+
+	if (val->val1 > 0) {
+		uint32_t period_ms = 1000 / val->val1;
+
+		/* Set preset to autonomous, this resets the distance mode so set it to last known config */
+		VL53L1_SetPresetMode(&drv_data->vl53l1x, VL53L1_PRESETMODE_AUTONOMOUS);
+
+		ret = VL53L1_SetDistanceMode(&drv_data->vl53l1x, drv_data->distance_mode);
+		if (ret != VL53L1_ERROR_NONE) {
+			LOG_ERR("[%s] VL53L1_SetDistanceMode return error (%d)", dev->name, ret);
+			return -EINVAL;
+		}
+
+		ret = VL53L1_SetInterMeasurementPeriodMilliSeconds(&drv_data->vl53l1x, period_ms);
+		if (ret != VL53L1_ERROR_NONE) {
+			LOG_ERR("[%s] VL53L1_SetInterMeasurementPeriodMilliSeconds failed: %d",
+				dev->name, ret);
+			return -EINVAL;
+		}
+
+		drv_data->autonomous_intermeasurement_period_ms = period_ms;
+
+		/* Set timing budget to 33ms or 66ms depending on the intermeasurement period
+		 * to maximize the sensor's accuracy.
+		 */
+		if (drv_data->autonomous_intermeasurement_period_ms > 100) {
+			VL53L1_SetMeasurementTimingBudgetMicroSeconds(&drv_data->vl53l1x, 66000);
+		} else {
+			VL53L1_SetMeasurementTimingBudgetMicroSeconds(&drv_data->vl53l1x, 33000);
+		}
+
+#ifdef CONFIG_VL53L1X_INTERRUPT_MODE
+		const struct vl53l1x_config *config = dev->config;
+
+		ret = gpio_pin_interrupt_configure_dt(&config->gpio1, GPIO_INT_EDGE_TO_INACTIVE);
+		if (ret < 0) {
+			LOG_ERR("[%s] Unable to config interrupt", dev->name);
+			return -EIO;
+		}
+#endif
+
+		ret = VL53L1_StartMeasurement(&drv_data->vl53l1x);
+		if (ret != VL53L1_ERROR_NONE) {
+			LOG_ERR("[%s] VL53L1_StartMeasurement return error (%d)", dev->name, ret);
+			return -EBUSY;
+		}
+	} else {
+		drv_data->autonomous_intermeasurement_period_ms = 0;
+		/* Set preset to ranging */
+		VL53L1_SetPresetMode(&drv_data->vl53l1x, VL53L1_PRESETMODE_LITE_RANGING);
+
+		ret = VL53L1_SetDistanceMode(&drv_data->vl53l1x, drv_data->distance_mode);
+		if (ret != VL53L1_ERROR_NONE) {
+			LOG_ERR("[%s] VL53L1_SetDistanceMode return error (%d)", dev->name, ret);
+			return -EINVAL;
+		}
+	}
+
+	return 0;
+}
+
 static int vl53l1x_get_mode(const struct device *dev,
 		struct sensor_value *val)
 {
@@ -297,6 +297,25 @@ static int vl53l1x_get_roi(const struct device *dev,
 	return 0;
 }
 
+static int vl53l1x_get_inter_measurement_freq(const struct device *dev, struct sensor_value *val)
+{
+	struct vl53l1x_data *drv_data = dev->data;
+
+	uint32_t period_ms;
+	VL53L1_Error ret = VL53L1_GetInterMeasurementPeriodMilliSeconds(&drv_data->vl53l1x, &period_ms);
+
+	if (ret != VL53L1_ERROR_NONE) {
+		LOG_ERR("[%s] VL53L1_GetInterMeasurementPeriodMilliSeconds return error (%d)", dev->name, ret);
+		return -ENODATA;
+	}
+
+	/* Map period_ms to val in Hz */
+	val->val1 = (int32_t) (1000 / period_ms);
+	val->val2 = 0;
+
+	return 0;
+}
+
 static int vl53l1x_sample_fetch(const struct device *dev,
 		enum sensor_channel chan)
 {
@@ -307,27 +326,52 @@ static int vl53l1x_sample_fetch(const struct device *dev,
 			chan == SENSOR_CHAN_DISTANCE ||
 			chan == SENSOR_CHAN_PROX);
 
-	/* Will immediately stop current measurement */
-	ret = VL53L1_StopMeasurement(&drv_data->vl53l1x);
-	if (ret != VL53L1_ERROR_NONE) {
-		LOG_ERR("VL53L1_StopMeasurement return error (%d)", ret);
-		return -EBUSY;
-	}
+	/* if ranging mode, we need to start a new measurement */
+	if (drv_data->autonomous_intermeasurement_period_ms == 0) {
+		/* Will immediately stop current measurement */
+		ret = VL53L1_StopMeasurement(&drv_data->vl53l1x);
+		if (ret != VL53L1_ERROR_NONE) {
+			LOG_ERR("VL53L1_StopMeasurement return error (%d)", ret);
+			return -EBUSY;
+		}
 
 #ifdef CONFIG_VL53L1X_INTERRUPT_MODE
-	const struct vl53l1x_config *config = dev->config;
+		const struct vl53l1x_config *config = dev->config;
 
-	ret = gpio_pin_interrupt_configure_dt(&config->gpio1, GPIO_INT_EDGE_TO_INACTIVE);
-	if (ret < 0) {
-		LOG_ERR("[%s] Unable to config interrupt", dev->name);
-		return -EIO;
-	}
+		ret = gpio_pin_interrupt_configure_dt(&config->gpio1, GPIO_INT_EDGE_TO_INACTIVE);
+		if (ret < 0) {
+			LOG_ERR("[%s] Unable to config interrupt", dev->name);
+			return -EIO;
+		}
 #endif
 
-	ret = VL53L1_StartMeasurement(&drv_data->vl53l1x);
-	if (ret != VL53L1_ERROR_NONE) {
-		LOG_ERR("[%s] VL53L1_StartMeasurement return error (%d)", dev->name, ret);
-		return -EBUSY;
+		ret = VL53L1_StartMeasurement(&drv_data->vl53l1x);
+		if (ret != VL53L1_ERROR_NONE) {
+			LOG_ERR("[%s] VL53L1_StartMeasurement return error (%d)", dev->name, ret);
+			return -EBUSY;
+		}
+	} else {
+		if (IS_ENABLED(CONFIG_VL53L1X_INTERRUPT_MODE) == 0) {
+			/* Host polling mode */
+			uint8_t ready;
+
+			ret = VL53L1_GetMeasurementDataReady(&drv_data->vl53l1x, &ready);
+			if (ret < 0) {
+				LOG_ERR("[%s] VL53L1_GetMeasurementDataReady (error=%d)", dev->name,
+					ret);
+				return -EINVAL;
+			}
+			if (!ready) {
+				return -ENODATA;
+			}
+
+			ret = vl53l1x_read_sensor(drv_data);
+			if (ret != VL53L1_ERROR_NONE) {
+				return -ENODATA;
+			}
+		} else {
+			/* nothing to do, data is fetched in the interrupt handler */
+		}
 	}
 
 	return 0;
@@ -338,58 +382,44 @@ static int vl53l1x_channel_get(const struct device *dev,
 		struct sensor_value *val)
 {
 	struct vl53l1x_data *drv_data = dev->data;
-	VL53L1_Error ret;
 
 	__ASSERT_NO_MSG(chan == SENSOR_CHAN_DISTANCE || chan == SENSOR_CHAN_PROX);
-
-	/* Calling VL53L1_WaitMeasurementDataReady regardless of using interrupt or
-	 * polling method ensures user does not have to consider the time between
-	 * calling fetch and get.
-	 */
-	ret = VL53L1_WaitMeasurementDataReady(&drv_data->vl53l1x);
-	if (ret != VL53L1_ERROR_NONE) {
-		LOG_ERR("[%s] VL53L1_WaitMeasurementDataReady return error (%d)", dev->name, ret);
-		return -EBUSY;
-	}
-
-	if (IS_ENABLED(CONFIG_VL53L1X_INTERRUPT_MODE) == 0) {
-		/* Using driver polling mode */
-		ret = vl53l1x_read_sensor(drv_data);
-		if (ret != VL53L1_ERROR_NONE) {
-			return -ENODATA;
-		}
-	}
-
-	double SigmaMilliMeter = (double)drv_data->data.SigmaMilliMeter / (double)(1 << 16);
-	double SignalRateRtnMegaCps =
-		(double)drv_data->data.SignalRateRtnMegaCps / (double)(1 << 16);
-	double AmbientRateRtnMegaCps =
-		(double)drv_data->data.AmbientRateRtnMegaCps / (double)(1 << 16);
-
-	/* Discriminate whether the distance is phantom data
-	 * We use the signal rate to SPAD count ratio to determine if the
-	 * measurement is valid.
-	 */
-	int signal_to_spad_ratio = 0;
-
-	if (drv_data->data.RangeStatus == 0) {
-		signal_to_spad_ratio = (int)((SignalRateRtnMegaCps / ((double)drv_data->data.EffectiveSpadRtnCount / 256.0)) * 1000.0);
-	} else {
-		return -ENODATA;
-	}
-
-	/* output data in CSV format for debugging
-	 * status,rangeMm,range quality,sigma,signal rate,ambient light,SPAD #,valid,ok/ko
-	 */
-	LOG_WRN("%01d,%04u,%03u,%.03f,%.03f,%.03f,%06u,%04u,%s", drv_data->data.RangeStatus,
-		drv_data->data.RangeMilliMeter, drv_data->data.RangeQualityLevel, SigmaMilliMeter,
-		SignalRateRtnMegaCps, AmbientRateRtnMegaCps, drv_data->data.EffectiveSpadRtnCount / 256, signal_to_spad_ratio,
-		signal_to_spad_ratio > CONFIG_VL53L1X_SIGNAL_SPAD_RATIO_THRESHOLD ? "🟢" : "🔴");
 
 	val->val1 = 0;
 	val->val2 = 0;
 
 	if (chan == SENSOR_CHAN_PROX) {
+		double SigmaMilliMeter = (double)drv_data->data.SigmaMilliMeter / (double)(1 << 16);
+		double SignalRateRtnMegaCps =
+			(double)drv_data->data.SignalRateRtnMegaCps / (double)(1 << 16);
+		double AmbientRateRtnMegaCps =
+			(double)drv_data->data.AmbientRateRtnMegaCps / (double)(1 << 16);
+
+		/* Discriminate whether the distance is phantom data
+		 * We use the signal rate to SPAD count ratio to determine if the
+		 * measurement is valid.
+		 */
+		int signal_to_spad_ratio = 0;
+
+		if (drv_data->data.RangeStatus == 0) {
+			signal_to_spad_ratio =
+				(int)((SignalRateRtnMegaCps /
+				       ((double)drv_data->data.EffectiveSpadRtnCount / 256.0)) *
+				      1000.0);
+		} else {
+			return -ENODATA;
+		}
+
+		/* output data in CSV format for post-processing
+		 * status,rangeMm,range quality,sigma,signal rate,ambient light,SPAD #,valid,ok/ko
+		 */
+		LOG_DBG("%01d,%04u,%03u,%.03f,%.03f,%.03f,%06u,%04u,%s", drv_data->data.RangeStatus,
+			drv_data->data.RangeMilliMeter, drv_data->data.RangeQualityLevel,
+			SigmaMilliMeter, SignalRateRtnMegaCps, AmbientRateRtnMegaCps,
+			drv_data->data.EffectiveSpadRtnCount / 256, signal_to_spad_ratio,
+			signal_to_spad_ratio > CONFIG_VL53L1X_SIGNAL_SPAD_RATIO_THRESHOLD ? "🟢"
+											  : "🔴");
+
 		if (signal_to_spad_ratio > CONFIG_VL53L1X_SIGNAL_SPAD_RATIO_THRESHOLD &&
 		    drv_data->data.RangeMilliMeter <= CONFIG_VL53L1X_PROXIMITY_THRESHOLD) {
 			val->val1 = 1;
@@ -416,6 +446,8 @@ static int vl53l1x_attr_get(const struct device *dev,
 		vl53l1x_get_mode(dev, val);
 	} else if (attr == SENSOR_ATTR_CALIB_TARGET) {
 		vl53l1x_get_roi(dev, val);
+	} else if (attr == SENSOR_ATTR_SAMPLING_FREQUENCY) {
+		vl53l1x_get_inter_measurement_freq(dev, val);
 	} else {
 		return -ENOTSUP;
 	}
@@ -434,6 +466,8 @@ static int vl53l1x_attr_set(const struct device *dev,
 		vl53l1x_set_mode(dev, val);
 	} else if (attr == SENSOR_ATTR_CALIB_TARGET) {
 		vl53l1x_set_roi(dev, val);
+	} else if (attr == SENSOR_ATTR_SAMPLING_FREQUENCY) {
+		vl53l1x_set_inter_measurement_freq(dev, val);
 	} else {
 		return -ENOTSUP;
 	}
@@ -447,6 +481,75 @@ static const struct sensor_driver_api vl53l1x_api_funcs = {
 	.attr_get = vl53l1x_attr_get,
 	.attr_set = vl53l1x_attr_set,
 };
+
+static int vl53l1x_initialize(const struct device *dev)
+{
+	struct vl53l1x_data *drv_data = dev->data;
+	VL53L1_Error ret;
+	VL53L1_DeviceInfo_t vl53l1x_dev_info;
+
+	LOG_DBG("[%s] Initializing ", dev->name);
+
+	/* Pull XSHUT high to start the sensor */
+#ifdef CONFIG_VL53L1X_XSHUT
+	const struct vl53l1x_config *const config = dev->config;
+
+	if (config->xshut.port) {
+		int gpio_ret = gpio_pin_set_dt(&config->xshut, 1);
+
+		if (gpio_ret < 0) {
+			LOG_ERR("[%s] Unable to set XSHUT gpio (error %d)", dev->name, gpio_ret);
+			return -EIO;
+		}
+		/* Boot duration is 1.2 ms max */
+		k_sleep(K_MSEC(2));
+	}
+#endif
+
+	/* ONE TIME device initialization.
+	 * To be called ONLY ONCE after device is brought out of reset
+	 */
+	ret = VL53L1_DataInit(&drv_data->vl53l1x);
+	if (ret != VL53L1_ERROR_NONE) {
+		LOG_ERR("[%s] VL53L1X_DataInit return error (%d)", dev->name, ret);
+		return -ENOTSUP;
+	}
+
+	/* Do basic device init */
+	ret = VL53L1_StaticInit(&drv_data->vl53l1x);
+	if (ret != VL53L1_ERROR_NONE) {
+		LOG_ERR("[%s] VL53L1_StaticInit return error (%d)", dev->name, ret);
+		return -ENOTSUP;
+	}
+
+	/* Get info from sensor */
+	(void)memset(&vl53l1x_dev_info, 0, sizeof(VL53L1_DeviceInfo_t));
+
+	ret = VL53L1_GetDeviceInfo(&drv_data->vl53l1x, &vl53l1x_dev_info);
+	if (ret != VL53L1_ERROR_NONE) {
+		LOG_ERR("[%s] VL53L1_GetDeviceInfo return error (%d)", dev->name, ret);
+		return -ENODEV;
+	}
+
+	LOG_DBG("[%s] VL53L1X_GetDeviceInfo returned %d", dev->name, ret);
+	LOG_DBG("   Device Name : %s", vl53l1x_dev_info.Name);
+	LOG_DBG("   Device Type : %s", vl53l1x_dev_info.Type);
+	LOG_DBG("   Device ID : %s", vl53l1x_dev_info.ProductId);
+	LOG_DBG("   ProductRevisionMajor : %d", vl53l1x_dev_info.ProductRevisionMajor);
+	LOG_DBG("   ProductRevisionMinor : %d", vl53l1x_dev_info.ProductRevisionMinor);
+
+	/* Set preset to ranging */
+	VL53L1_SetPresetMode(&drv_data->vl53l1x, VL53L1_PRESETMODE_LITE_RANGING);
+	/* Set default inter-measurement period - ranging mode = 0 */
+	drv_data->autonomous_intermeasurement_period_ms = 0;
+
+	/* Set default distance mode */
+	const struct sensor_value mode = {.val1 = VL53L1_DISTANCEMODE_LONG, .val2 = 0};
+
+	vl53l1x_set_mode(dev, &mode);
+
+	return 0;
+}
 
 static int vl53l1x_init(const struct device *dev)
 {
@@ -466,23 +569,23 @@ static int vl53l1x_init(const struct device *dev)
 	 * allow deepest sleep mode
 	 */
 #ifdef CONFIG_VL53L1X_XSHUT
-		if (config->xshut.port) {
-			ret = gpio_pin_configure_dt(&config->xshut, GPIO_OUTPUT);
-			if (ret < 0) {
-				LOG_ERR("[%s] Unable to configure GPIO as output", dev->name);
-				return -EIO;
-			}
+	if (config->xshut.port) {
+		ret = gpio_pin_configure_dt(&config->xshut, GPIO_OUTPUT);
+		if (ret < 0) {
+			LOG_ERR("[%s] Unable to configure GPIO as output", dev->name);
+			return -EIO;
 		}
+	}
 #endif
 
 #ifdef CONFIG_VL53L1X_INTERRUPT_MODE
-		if (config->gpio1.port) {
-			ret = vl53l1x_init_interrupt(dev);
-			if (ret < 0) {
-				LOG_ERR("Failed to initialize interrupt!");
-				return -EIO;
-			}
+	if (config->gpio1.port) {
+		ret = vl53l1x_init_interrupt(dev);
+		if (ret < 0) {
+			LOG_ERR("Failed to initialize interrupt!");
+			return -EIO;
 		}
+	}
 #endif
 
 	ret = vl53l1x_initialize(dev);
