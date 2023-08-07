@@ -10,6 +10,7 @@
 #include <zephyr/drivers/sensor.h>
 #include <zephyr/drivers/adc.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/drivers/sensor/stm32_temp.h>
 #if defined(CONFIG_SOC_SERIES_STM32H5X)
 #include <stm32_ll_icache.h>
 #endif /* CONFIG_SOC_SERIES_STM32H5X */
@@ -60,6 +61,8 @@ struct stm32_temp_config {
 	bool is_ntc;
 };
 
+static uint16_t stm32_temp_adc_vref_mv;
+
 static int stm32_temp_sample_fetch(const struct device *dev, enum sensor_channel chan)
 {
 	struct stm32_temp_data *data = dev->data;
@@ -106,7 +109,13 @@ static int stm32_temp_channel_get(const struct device *dev, enum sensor_channel 
 	LL_ICACHE_Disable();
 #endif /* CONFIG_SOC_SERIES_STM32H5X */
 
-	temp = ((float)data->raw * adc_ref_internal(data->adc)) / cfg->cal_vrefanalog;
+	if (stm32_temp_adc_vref_mv == 0) {
+		/* adc vref attribute is not set -> use the one from adc node in device tree */
+		temp = ((float) data->raw * adc_ref_internal(data->adc)) / cfg->cal_vrefanalog;
+	} else {
+		/* use vref from attribute */
+		temp = ((float)data->raw * stm32_temp_adc_vref_mv) / cfg->cal_vrefanalog;
+	}
 	temp -= (*cfg->cal1_addr >> cfg->ts_cal_shift);
 #if HAS_SINGLE_CALIBRATION
 	if (cfg->is_ntc) {
@@ -139,15 +148,34 @@ static int stm32_temp_channel_get(const struct device *dev, enum sensor_channel 
 	return sensor_value_from_double(val, temp);
 }
 
+static int stm32_temp_attr_set(const struct device *dev, enum sensor_channel chan,
+			enum sensor_attribute attr,
+			const struct sensor_value *val)
+{
+	if (chan != SENSOR_CHAN_DIE_TEMP) {
+		return -ENOTSUP;
+	}
+
+	if ((int16_t)attr == SENSOR_ATTR_VREF_MV) {
+		stm32_temp_adc_vref_mv = (uint16_t)val->val1;
+		return 0;
+	} else {
+		return -ENOTSUP;
+	}
+}
+
 static const struct sensor_driver_api stm32_temp_driver_api = {
 	.sample_fetch = stm32_temp_sample_fetch,
 	.channel_get = stm32_temp_channel_get,
+	.attr_set = stm32_temp_attr_set,
 };
 
 static int stm32_temp_init(const struct device *dev)
 {
 	struct stm32_temp_data *data = dev->data;
 	struct adc_sequence *asp = &data->adc_seq;
+
+	stm32_temp_adc_vref_mv = 0;
 
 	k_mutex_init(&data->mutex);
 
@@ -197,6 +225,6 @@ static const struct stm32_temp_config stm32_temp_dev_config = {
 };
 
 SENSOR_DEVICE_DT_INST_DEFINE(0, stm32_temp_init, NULL,
-			     &stm32_temp_dev_data, &stm32_temp_dev_config,
-			     POST_KERNEL, CONFIG_SENSOR_INIT_PRIORITY,
-			     &stm32_temp_driver_api);
+				 &stm32_temp_dev_data, &stm32_temp_dev_config,
+				 POST_KERNEL, CONFIG_SENSOR_INIT_PRIORITY,
+				 &stm32_temp_driver_api);
