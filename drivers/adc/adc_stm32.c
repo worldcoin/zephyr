@@ -229,6 +229,8 @@ static int adc_stm32_dma_start(const struct device *dev,
 	}
 #elif defined(ADC_VER_V5_X)
 	LL_ADC_REG_SetDataTransferMode(adc, LL_ADC_REG_DMA_TRANSFER_LIMITED);
+#else
+	LL_ADC_REG_SetDMATransfer(adc, LL_ADC_REG_DMA_TRANSFER_LIMITED);
 #endif
 
 	data->dma_error = 0;
