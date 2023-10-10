@@ -543,6 +543,22 @@ static void i2c_stm32_irq_config_func_##index(const struct device *dev)	\
 #define USE_TIMINGS(index)
 #endif /* V2 */
 
+/* allow redefinition of init priority, per instance,
+ * at least for the 4 first instances
+ */
+#ifndef CONFIG_I2C_INIT_PRIO_INST_0
+#define CONFIG_I2C_INIT_PRIO_INST_0 CONFIG_I2C_INIT_PRIORITY
+#endif
+#ifndef CONFIG_I2C_INIT_PRIO_INST_1
+#define CONFIG_I2C_INIT_PRIO_INST_1 CONFIG_I2C_INIT_PRIORITY
+#endif
+#ifndef CONFIG_I2C_INIT_PRIO_INST_2
+#define CONFIG_I2C_INIT_PRIO_INST_2 CONFIG_I2C_INIT_PRIORITY
+#endif
+#ifndef CONFIG_I2C_INIT_PRIO_INST_3
+#define CONFIG_I2C_INIT_PRIO_INST_3 CONFIG_I2C_INIT_PRIORITY
+#endif
+
 #define STM32_I2C_INIT(index)						\
 STM32_I2C_IRQ_HANDLER_DECL(index);					\
 									\
@@ -573,7 +589,8 @@ I2C_DEVICE_DT_INST_DEFINE(index, i2c_stm32_init,			\
 			 PM_DEVICE_DT_INST_GET(index),			\
 			 &i2c_stm32_dev_data_##index,			\
 			 &i2c_stm32_cfg_##index,			\
-			 POST_KERNEL, CONFIG_I2C_INIT_PRIORITY,		\
+			 POST_KERNEL,                                   \
+			 _CONCAT(CONFIG_I2C_INIT_PRIO_INST_, index),	\
 			 &api_funcs);					\
 									\
 STM32_I2C_IRQ_HANDLER(index)
