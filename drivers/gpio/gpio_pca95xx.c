@@ -843,6 +843,22 @@ static int gpio_pca95xx_init(const struct device *dev)
 	return 0;
 }
 
+/* allow redefinition of init priority, per instance,
+ * at least for the 4 first instances
+ */
+#ifndef CONFIG_PCA95XX_INIT_PRIO_INST_0
+#define CONFIG_PCA95XX_INIT_PRIO_INST_0 CONFIG_GPIO_PCA95XX_INIT_PRIORITY
+#endif
+#ifndef CONFIG_PCA95XX_INIT_PRIO_INST_1
+#define CONFIG_PCA95XX_INIT_PRIO_INST_1 CONFIG_GPIO_PCA95XX_INIT_PRIORITY
+#endif
+#ifndef CONFIG_PCA95XX_INIT_PRIO_INST_2
+#define CONFIG_PCA95XX_INIT_PRIO_INST_2 CONFIG_GPIO_PCA95XX_INIT_PRIORITY
+#endif
+#ifndef CONFIG_PCA95XX_INIT_PRIO_INST_3
+#define CONFIG_PCA95XX_INIT_PRIO_INST_3 CONFIG_GPIO_PCA95XX_INIT_PRIORITY
+#endif
+
 #define GPIO_PCA95XX_DEVICE_INSTANCE(inst)				\
 static const struct gpio_pca95xx_config gpio_pca95xx_##inst##_cfg = {	\
 	.common = {							\
@@ -880,7 +896,8 @@ DEVICE_DT_INST_DEFINE(inst,						\
 	NULL,								\
 	&gpio_pca95xx_##inst##_drvdata,					\
 	&gpio_pca95xx_##inst##_cfg,					\
-	POST_KERNEL, CONFIG_GPIO_PCA95XX_INIT_PRIORITY,			\
+	POST_KERNEL,                                                    \
+	_CONCAT(CONFIG_PCA95XX_INIT_PRIO_INST_, inst),			\
 	&gpio_pca95xx_drv_api_funcs);
 
 DT_INST_FOREACH_STATUS_OKAY(GPIO_PCA95XX_DEVICE_INSTANCE)
