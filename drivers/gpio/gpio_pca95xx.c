@@ -858,6 +858,12 @@ static int gpio_pca95xx_init(const struct device *dev)
 #ifndef CONFIG_PCA95XX_INIT_PRIO_INST_3
 #define CONFIG_PCA95XX_INIT_PRIO_INST_3 CONFIG_GPIO_PCA95XX_INIT_PRIORITY
 #endif
+#ifndef CONFIG_PCA95XX_INIT_PRIO_INST_4
+#define CONFIG_PCA95XX_INIT_PRIO_INST_4 CONFIG_GPIO_PCA95XX_INIT_PRIORITY
+#endif
+#ifndef CONFIG_PCA95XX_INIT_PRIO_INST_5
+#define CONFIG_PCA95XX_INIT_PRIO_INST_5 CONFIG_GPIO_PCA95XX_INIT_PRIORITY
+#endif
 
 #define GPIO_PCA95XX_DEVICE_INSTANCE(inst)				\
 static const struct gpio_pca95xx_config gpio_pca95xx_##inst##_cfg = {	\
