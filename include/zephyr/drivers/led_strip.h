@@ -62,6 +62,23 @@ typedef int (*led_api_update_rgb)(const struct device *dev,
 				  size_t num_pixels);
 
 /**
+ * @typedef led_api_trigger_stream
+ * @brief Callback API for triggering the start of the datastream 
+ * of the RGB LED strip. led_strip_update_rgb() needs to be called prior to this.
+ *
+ * @see led_strip_trigger_stream() for argument descriptions.
+ */
+typedef int (*led_api_trigger_stream)(const struct device *dev);
+
+/**
+ * @typedef led_api_set_triggered_mode
+ * @brief Callback API for enable/disable the triggered mode of the RGB LED strip. 
+ *
+ * @see led_strip_set_triggered_mode() for argument descriptions.
+ */
+typedef int (*led_api_set_triggered_mode)(struct device *dev, bool triggered_mode);
+
+/**
  * @typedef led_api_update_channels
  * @brief Callback API for updating channels without an RGB interpretation.
  *
@@ -78,6 +95,8 @@ typedef int (*led_api_update_channels)(const struct device *dev,
  */
 struct led_strip_driver_api {
 	led_api_update_rgb update_rgb;
+	led_api_trigger_stream trigger_stream;
+	led_api_set_triggered_mode set_triggered_mode;
 	led_api_update_channels update_channels;
 };
 
@@ -103,6 +122,35 @@ static inline int led_strip_update_rgb(const struct device *dev,
 		(const struct led_strip_driver_api *)dev->api;
 
 	return api->update_rgb(dev, pixels, num_pixels);
+}
+
+/**
+ * @brief Triggers the datastream of the RGB LED strip
+ *
+ * This routine starts the output of the data stream if a stream is ready
+ *
+ * @param dev LED strip device
+ * @return 0 on success, negative on error
+ */
+static inline int led_strip_trigger_stream(const struct device *dev) {
+	const struct led_strip_driver_api *api =
+		(const struct led_strip_driver_api *)dev->api;
+
+	return api->trigger_stream(dev);
+}
+
+/**
+ * @brief Enable/disable the triggered mode of the RGB LED strip.
+ *
+ * @param dev LED strip device
+ * @param triggered_mode set value for the triggered mode (true -> on, false -> off)
+ * @return 0 on success, negative on error
+ */
+static inline int led_strip_set_triggered_mode(struct device *dev, bool triggered_mode) {
+	const struct led_strip_driver_api *api =
+		(const struct led_strip_driver_api *)dev->api;
+
+	return api->set_triggered_mode(dev, triggered_mode);
 }
 
 /**
