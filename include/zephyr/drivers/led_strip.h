@@ -76,7 +76,7 @@ typedef int (*led_api_trigger_stream)(const struct device *dev);
  *
  * @see led_strip_set_triggered_mode() for argument descriptions.
  */
-typedef int (*led_api_set_triggered_mode)(struct device *dev, bool triggered_mode);
+typedef int (*led_api_set_triggered_mode)(const struct device *dev, bool triggered_mode);
 
 /**
  * @typedef led_api_update_channels
@@ -146,7 +146,7 @@ static inline int led_strip_trigger_stream(const struct device *dev) {
  * @param triggered_mode set value for the triggered mode (true -> on, false -> off)
  * @return 0 on success, negative on error
  */
-static inline int led_strip_set_triggered_mode(struct device *dev, bool triggered_mode) {
+static inline int led_strip_set_triggered_mode(const struct device *dev, bool triggered_mode) {
 	const struct led_strip_driver_api *api =
 		(const struct led_strip_driver_api *)dev->api;
 
