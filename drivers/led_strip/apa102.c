@@ -76,6 +76,10 @@ static int apa102_update_rgb(const struct device *dev, struct led_rgb *pixels,
 static int apa102_update_channels(const struct device *dev, uint8_t *channels,
 				  size_t num_channels)
 {
+	ARG_UNUSED(dev);
+	ARG_UNUSED(channels);
+	ARG_UNUSED(num_channels);
+
 	/* Not implemented */
 	return -EINVAL;
 }
