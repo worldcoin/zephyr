@@ -582,7 +582,8 @@ static void receive_can_rx(const struct device *dev, struct can_frame *frame, vo
 		break;
 
 	default:
-		LOG_INF("Got a frame in a state where it is unexpected.");
+		receive_report_error(rctx, ISOTP_N_ERROR);
+		LOG_WRN("Got a frame in a state where it is unexpected: %u", rctx->state);
 	}
 
 	k_work_submit(&rctx->work);
@@ -756,6 +757,10 @@ static inline void send_report_error(struct isotp_send_ctx *sctx, uint32_t err)
 	sctx->error_nr = err;
 }
 
+/*
+ * Callback called from ISR
+ * might be called before `can_send()` returns
+ */
 static void send_can_tx_cb(const struct device *dev, int error, void *arg)
 {
 	struct isotp_send_ctx *sctx = (struct isotp_send_ctx *)arg;
@@ -764,14 +769,6 @@ static void send_can_tx_cb(const struct device *dev, int error, void *arg)
 
 	sctx->tx_backlog--;
 	k_sem_give(&sctx->tx_sem);
-
-	if (sctx->state == ISOTP_TX_WAIT_BACKLOG) {
-		if (sctx->tx_backlog > 0) {
-			return;
-		}
-
-		sctx->state = ISOTP_TX_WAIT_FIN;
-	}
 
 	k_work_submit(&sctx->work);
 }
@@ -847,7 +844,9 @@ static void send_process_fc(struct isotp_send_ctx *sctx, struct can_frame *frame
 	}
 }
 
-static void send_can_rx_cb(const struct device *dev, struct can_frame *frame, void *arg)
+static void send_can_rx_cb(const struct device *dev,
+			   struct can_frame *frame,
+			   void *arg)
 {
 	struct isotp_send_ctx *sctx = (struct isotp_send_ctx *)arg;
 
@@ -1082,6 +1081,8 @@ static void send_state_machine(struct isotp_send_ctx *sctx)
 {
 	int ret;
 
+	LOG_DBG("state %u", sctx->state);
+
 	switch (sctx->state) {
 
 	case ISOTP_TX_SEND_FF:
@@ -1131,8 +1132,12 @@ static void send_state_machine(struct isotp_send_ctx *sctx)
 		LOG_DBG("SM wait ST");
 		break;
 
+	case ISOTP_TX_WAIT_BACKLOG:
+		if (sctx->tx_backlog > 0) {
+			break;
+		}
+		__fallthrough;
 	case ISOTP_TX_ERR:
-		LOG_DBG("SM error");
 		__fallthrough;
 	case ISOTP_TX_SEND_SF:
 		__fallthrough;
