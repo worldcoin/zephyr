@@ -33,7 +33,8 @@ config VL53L1X_PROXIMITY_THRESHOLD
     int "Proximity threshold in millimeters"
     default 100
     help
-        Threshold used for proximity detection when sensor is used with SENSOR_CHAN_PROX.
+        Distance in millimeters by which an object is detected in close proximity.
+        When sensor is used with SENSOR_CHAN_PROX.
 
 config VL53L1X_SIGNAL_SPAD_RATIO_THRESHOLD
 	int "Signal SPAD ratio threshold"
@@ -43,5 +44,13 @@ config VL53L1X_SIGNAL_SPAD_RATIO_THRESHOLD
 	  It helps remove false positives when the sensor is used in a dark environment and spits out phantom readings.
 	  The ratio is calculated as follows:
 	  	ratio = (Signal rate / SPAD count) * 1000
+
+config VL53L1X_PROXIMITY_RANGE_MINIMUM
+    int "Accepted distance range, minimum value (millimeters)"
+    default 0
+    help
+        Minimum distance value that is accepted as valid proximity reading.
+        Under this value, proximity reading is considered invalid.
+        By default, accept all values.
 
 endif # VL53L1X

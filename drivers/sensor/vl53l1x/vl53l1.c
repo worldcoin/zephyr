@@ -421,6 +421,7 @@ static int vl53l1x_channel_get(const struct device *dev,
 											  : "🔴");
 
 		if (signal_to_spad_ratio > CONFIG_VL53L1X_SIGNAL_SPAD_RATIO_THRESHOLD &&
+		    drv_data->data.RangeMilliMeter >= CONFIG_VL53L1X_PROXIMITY_RANGE_MINIMUM &&
 		    drv_data->data.RangeMilliMeter <= CONFIG_VL53L1X_PROXIMITY_THRESHOLD) {
 			val->val1 = 1;
 		}
