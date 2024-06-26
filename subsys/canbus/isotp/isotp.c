@@ -70,7 +70,8 @@ static void receive_ff_sf_pool_free(struct net_buf *buf)
 	}
 }
 
-static inline void receive_report_error(struct isotp_recv_ctx *ctx, int err)
+static inline void receive_report_error(struct isotp_recv_ctx *ctx,
+					int err)
 {
 	ctx->state = ISOTP_RX_STATE_ERR;
 	ctx->error_nr = err;
@@ -374,7 +375,8 @@ static void receive_work_handler(struct k_work *item)
 	receive_state_machine(ctx);
 }
 
-static void process_ff_sf(struct isotp_recv_ctx *ctx, struct can_frame *frame)
+static void process_ff_sf(struct isotp_recv_ctx *ctx,
+			  struct can_frame *frame)
 {
 	int index = 0;
 	uint8_t payload_len;
@@ -443,7 +445,8 @@ static void process_ff_sf(struct isotp_recv_ctx *ctx, struct can_frame *frame)
 	net_buf_add_mem(ctx->buf, &frame->data[index], payload_len - index);
 }
 
-static inline void receive_add_mem(struct isotp_recv_ctx *ctx, uint8_t *data,
+static inline void receive_add_mem(struct isotp_recv_ctx *ctx,
+				   uint8_t *data,
 				   size_t len)
 {
 	size_t tailroom = net_buf_tailroom(ctx->act_frag);
@@ -528,7 +531,9 @@ static void process_cf(struct isotp_recv_ctx *ctx, struct can_frame *frame)
 	}
 }
 
-static void receive_can_rx(const struct device *dev, struct can_frame *frame, void *arg)
+static void receive_can_rx(const struct device *dev,
+			   struct can_frame *frame,
+			   void *arg)
 {
 	struct isotp_recv_ctx *ctx = (struct isotp_recv_ctx *)arg;
 
@@ -555,7 +560,8 @@ static void receive_can_rx(const struct device *dev, struct can_frame *frame, vo
 		break;
 
 	default:
-		LOG_INF("Got a frame in a state where it is unexpected.");
+		receive_report_error(ctx, ISOTP_N_ERROR);
+		LOG_WRN("Got a frame in a state where it is unexpected: %u", ctx->state);
 	}
 
 	k_work_submit(&ctx->work);
@@ -572,7 +578,8 @@ static inline int attach_ff_filter(struct isotp_recv_ctx *ctx)
 	}
 
 	struct can_filter filter = {
-		.flags = CAN_FILTER_DATA | ((ctx->rx_addr.ide != 0) ? CAN_FILTER_IDE : 0),
+		.flags = CAN_FILTER_DATA | ((ctx->rx_addr.ide != 0) ?
+			 CAN_FILTER_IDE : 0),
 		.id = ctx->rx_addr.ext_id,
 		.mask = mask
 	};
@@ -720,12 +727,17 @@ int isotp_recv(struct isotp_recv_ctx *ctx, uint8_t *data, size_t len,
 	return copied;
 }
 
-static inline void send_report_error(struct isotp_send_ctx *ctx, uint32_t err)
+static inline void send_report_error(struct isotp_send_ctx *ctx,
+				     uint32_t err)
 {
 	ctx->state = ISOTP_TX_ERR;
 	ctx->error_nr = err;
 }
 
+/*
+ * Callback called from ISR
+ * might be called before `can_send()` returns
+ */
 static void send_can_tx_cb(const struct device *dev, int error, void *arg)
 {
 	struct isotp_send_ctx *ctx = (struct isotp_send_ctx *)arg;
@@ -734,14 +746,6 @@ static void send_can_tx_cb(const struct device *dev, int error, void *arg)
 
 	ctx->tx_backlog--;
 	k_sem_give(&ctx->tx_sem);
-
-	if (ctx->state == ISOTP_TX_WAIT_BACKLOG) {
-		if (ctx->tx_backlog > 0) {
-			return;
-		}
-
-		ctx->state = ISOTP_TX_WAIT_FIN;
-	}
 
 	k_work_submit(&ctx->work);
 }
@@ -821,7 +825,9 @@ static void send_process_fc(struct isotp_send_ctx *ctx,
 	}
 }
 
-static void send_can_rx_cb(const struct device *dev, struct can_frame *frame, void *arg)
+static void send_can_rx_cb(const struct device *dev,
+			   struct can_frame *frame,
+			   void *arg)
 {
 	struct isotp_send_ctx *ctx = (struct isotp_send_ctx *)arg;
 
@@ -1039,6 +1045,8 @@ static void send_state_machine(struct isotp_send_ctx *ctx)
 {
 	int ret;
 
+	LOG_DBG("state %u", ctx->state);
+
 	switch (ctx->state) {
 
 	case ISOTP_TX_SEND_FF:
@@ -1092,8 +1100,12 @@ static void send_state_machine(struct isotp_send_ctx *ctx)
 		LOG_DBG("SM wait ST");
 		break;
 
+	case ISOTP_TX_WAIT_BACKLOG:
+		if (ctx->tx_backlog > 0) {
+			break;
+		}
+		__fallthrough;
 	case ISOTP_TX_ERR:
-		LOG_DBG("SM error");
 		__fallthrough;
 	case ISOTP_TX_SEND_SF:
 		__fallthrough;
@@ -1131,7 +1143,9 @@ static void send_work_handler(struct k_work *item)
 static inline int attach_fc_filter(struct isotp_send_ctx *ctx)
 {
 	struct can_filter filter = {
-		.flags = CAN_FILTER_DATA | ((ctx->rx_addr.ide != 0) ? CAN_FILTER_IDE : 0),
+		.flags = CAN_FILTER_DATA |
+			 ((ctx->rx_addr.ide != 0) ?
+			 CAN_FILTER_IDE : 0),
 		.id = ctx->rx_addr.ext_id,
 		.mask = CAN_EXT_ID_MASK
 	};
