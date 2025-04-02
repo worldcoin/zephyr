@@ -26,6 +26,15 @@ config ISOTP_WFTMAX
 	  This value defines the maximum number of WAIT frames before the transmission
 	  is aborted.
 
+config ISOTP_FC_DELAY_US
+    int "Delay in microseconds before sending the FC frame"
+    default 0
+    range 0 10000
+    help
+        The sender might need time to set up reception of the FC frame. This config allows such case.
+        Resolution of that timer might not be ensured because the lower bound on the duration of a sleep is
+        the duration of a tick.
+
 config ISOTP_BS_TIMEOUT
 	int "Bs timeout [ms] (timeout for receiving the frame control)"
 	default 1000
