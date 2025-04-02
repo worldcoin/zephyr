@@ -161,6 +161,15 @@ static void receive_send_fc(struct isotp_recv_ctx *rctx, uint8_t fs)
 	frame.dlc = can_bytes_to_dlc(payload_len);
 #endif
 
+#if defined(CONFIG_ISOTP_FC_DELAY_US) && CONFIG_ISOTP_FC_DELAY_US != 0
+	// @fouge
+	// Remote might need some time to set up reception of the FC frame.
+	// As seen on Jetson, the last CF of the block was seen after
+	// the FC frame by candump on the Jetson 🤯. Each time, it leads
+	// to error during transmission of the message of iso-tp.
+	k_usleep(CONFIG_ISOTP_FC_DELAY_US);
+#endif
+
 	ret = can_send(rctx->can_dev, &frame, K_MSEC(ISOTP_A_TIMEOUT_MS), receive_can_tx, rctx);
 	if (ret) {
 		LOG_ERR("Can't send FC, (%d)", ret);
