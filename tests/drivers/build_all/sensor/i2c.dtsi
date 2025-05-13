@@ -1343,6 +1343,7 @@ test_i2c_bh1730: bh1730@b4 {
 	compatible = "rohm,bh1730";
 	reg = <0xb4>;
 };
+<<<<<<< HEAD
 
 test_i2c_npm1300: npm1300@b5 {
 	compatible = "nordic,npm1300";
