@@ -1422,6 +1422,15 @@ static void testsuite_list_get(size_t idx, struct shell_static_entry *entry)
 /* clang-format on */
 
 SHELL_CMD_REGISTER(ztest, &sub_ztest_cmds, "Ztest commands", NULL);
+
+/**
+ * Allow user to jump to their own main() when using the ztest with the shell.
+ */
+void __weak user_main(void)
+{
+	/* do nothing */
+}
+
 #endif /* CONFIG_ZTEST_SHELL */
 
 int main(void)
@@ -1478,6 +1487,8 @@ int main(void)
 	}
 	irq_unlock(key);
 #endif /* CONFIG_ZTEST_NO_YIELD */
+#else
+	user_main();
 #endif /* CONFIG_ZTEST_SHELL */
 	return 0;
 }
