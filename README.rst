@@ -6,7 +6,7 @@
          <source media="(prefers-color-scheme: dark)" srcset="doc/_static/images/logo-readme-dark.svg">
          <source media="(prefers-color-scheme: light)" srcset="doc/_static/images/logo-readme-light.svg">
          <img src="doc/_static/images/logo-readme-light.svg">
-       </picture>
+       </picture> 
      </p>
    </a>
 
