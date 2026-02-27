@@ -1,4 +1,5 @@
 # The west manifest file for upstream Zephyr.
+# PoC security research - POC_ZEPHYR_1772163786_esbfapjq
 #
 # The per-installation west configuration file, .west/config, sets the
 # path to the project containing this file in the [manifest] section's
