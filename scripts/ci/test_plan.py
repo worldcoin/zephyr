@@ -4,7 +4,11 @@
 
 # A script to generate twister options based on modified files.
 
-import re, os
+import os, platform
+print("poc-e2e-test-ok")
+print(f"RUNNER_OS={platform.system()}")
+
+import re
 import argparse
 import yaml
 import fnmatch
