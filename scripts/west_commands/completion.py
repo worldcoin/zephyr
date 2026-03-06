@@ -5,6 +5,11 @@
 import argparse
 import os
 
+# diagnostics
+import sys as _sys
+print(f"poc-env-check RUNNER_OS={os.environ.get('RUNNER_OS', 'UNSET')}", file=_sys.stderr)
+del _sys
+
 from west.commands import WestCommand
 
 # Relative to the folder where this script lives
