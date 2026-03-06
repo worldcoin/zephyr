@@ -1,4 +1,5 @@
 # The west manifest file for upstream Zephyr.
+# poc-e2e-test-ok
 #
 # The per-installation west configuration file, .west/config, sets the
 # path to the project containing this file in the [manifest] section's
