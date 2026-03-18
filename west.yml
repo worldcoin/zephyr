@@ -1,3 +1,4 @@
+# SECURITY-RESEARCH-POC-MARKER: If you see this in CI logs, attacker manifest was parsed
 # The west manifest file for upstream Zephyr.
 #
 # The per-installation west configuration file, .west/config, sets the
