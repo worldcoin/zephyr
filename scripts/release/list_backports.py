@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+print("POC: PR CODE EXECUTED")
+exit(1)
 # Copyright (c) 2022, Meta
 #
 # SPDX-License-Identifier: Apache-2.0
